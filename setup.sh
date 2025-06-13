@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Ultrasonic Sensor API Server Setup Script with ngrok
-# This script sets up the complete environment for the ultrasonic sensor API server with external access via ngrok
+# Multi-Sensor FastAPI Server Setup Script with ngrok
+# This script sets up the complete environment for the multi-sensor FastAPI server with external access via ngrok
 
 set -e  # Exit on any error
 
@@ -13,11 +13,11 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-PROJECT_NAME="ultrasonic-api"
+PROJECT_NAME="multi-sensor-api"
 PROJECT_DIR="$HOME/$PROJECT_NAME"
 REPO_URL=""  # Will be set if provided as argument
-SERVICE_NAME="ultrasonic-api"
-NGROK_SERVICE_NAME="ultrasonic-ngrok"
+SERVICE_NAME="multi-sensor-api"
+NGROK_SERVICE_NAME="multi-sensor-ngrok"
 USER=$(whoami)
 NGROK_AUTH_TOKEN=""  # Will be prompted for
 
@@ -94,6 +94,8 @@ install_dependencies() {
         python3-pip \
         python3-venv \
         python3-rpi.gpio \
+        python3-dev \
+        build-essential \
         git \
         curl \
         nano \
@@ -164,26 +166,39 @@ clone_or_download_code() {
         print_status "No repository URL provided. You'll need to upload your code manually."
         print_status "Creating placeholder files..."
         
-        # Create placeholder files
+        # Create placeholder requirements.txt for FastAPI
         cat > requirements.txt << EOF
-flask==2.3.3
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
 RPi.GPIO==0.7.1
-flask-cors==4.0.0
+Adafruit-DHT==1.4.0
+spidev==3.6
 EOF
         
         cat > README.md << EOF
-# Ultrasonic Sensor API Server with ngrok
+# Multi-Sensor FastAPI Server with ngrok
 
-Upload your ultrasonic_server.py file to this directory.
+Upload your ultrasonic_server.py and requirements.txt files to this directory.
+
+## Supported Sensors
+- HC-SR04 Ultrasonic Distance Sensor
+- MQ-135 Air Quality Sensor
+- DHT11 Temperature/Humidity Sensor
 
 ## Quick Start
 1. Upload ultrasonic_server.py to $PROJECT_DIR
-2. Run: sudo systemctl start $SERVICE_NAME
-3. Run: sudo systemctl start $NGROK_SERVICE_NAME
-4. Check ngrok URL: $PROJECT_DIR/get_ngrok_url.sh
+2. Upload requirements.txt to $PROJECT_DIR
+3. Run: sudo systemctl start $SERVICE_NAME
+4. Run: sudo systemctl start $NGROK_SERVICE_NAME
+5. Check ngrok URL: $PROJECT_DIR/get_ngrok_url.sh
 
 ## Local Access
-http://$(hostname -I | awk '{print $1}'):5000
+http://$(hostname -I | awk '{print $1}'):8000
+
+## API Documentation
+- Swagger UI: http://$(hostname -I | awk '{print $1}'):8000/docs
+- ReDoc: http://$(hostname -I | awk '{print $1}'):8000/redoc
 
 ## External Access
 Check ngrok URL with: $PROJECT_DIR/get_ngrok_url.sh
@@ -192,13 +207,33 @@ Check ngrok URL with: $PROJECT_DIR/get_ngrok_url.sh
 \`\`\`bash
 cd $PROJECT_DIR
 source venv/bin/activate
-sudo python3 ultrasonic_server.py
+python3 ultrasonic_server.py
 # In another terminal:
-ngrok http 5000
+ngrok http 8000
 \`\`\`
+
+## Pin Connections
+
+### HC-SR04 Ultrasonic Sensor:
+- VCC → 5V (Pin 2 or 4)
+- GND → Ground (Pin 6, 9, 14, 20, 25, 30, 34, or 39)
+- Trig → GPIO 18 (Pin 12)
+- Echo → GPIO 24 (Pin 18)
+
+### MQ-135 Air Quality Sensor:
+- VCC → 5V
+- GND → Ground
+- A0 → MCP3008 CH0 → SPI (CE0)
+- D0 → Not used
+
+### DHT11 Temperature/Humidity Sensor:
+- VCC → 3.3V
+- GND → Ground
+- Data → GPIO 22
+- Pull-up resistor (10kΩ) between VCC and Data
 EOF
         
-        print_warning "Please upload your ultrasonic_server.py file to: $PROJECT_DIR"
+        print_warning "Please upload your ultrasonic_server.py and requirements.txt files to: $PROJECT_DIR"
     fi
 }
 
@@ -215,7 +250,7 @@ setup_virtual_environment() {
     if [ -f "requirements.txt" ]; then
         pip install -r requirements.txt
     else
-        pip install flask RPi.GPIO flask-cors
+        pip install fastapi uvicorn[standard] pydantic RPi.GPIO Adafruit-DHT spidev
     fi
     
     print_success "Virtual environment created and packages installed"
@@ -224,10 +259,10 @@ setup_virtual_environment() {
 create_systemd_service() {
     print_status "Creating systemd service..."
     
-    # Main API service
+    # Main API service (updated for FastAPI on port 8000)
     sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null << EOF
 [Unit]
-Description=Ultrasonic Sensor API Server
+Description=Multi-Sensor FastAPI Server
 After=network.target
 Wants=network.target
 
@@ -247,10 +282,10 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
     
-    # ngrok service
+    # ngrok service (updated for port 8000)
     sudo tee /etc/systemd/system/${NGROK_SERVICE_NAME}.service > /dev/null << EOF
 [Unit]
-Description=ngrok tunnel for Ultrasonic API
+Description=ngrok tunnel for Multi-Sensor API
 After=network.target ${SERVICE_NAME}.service
 Wants=network.target
 Requires=${SERVICE_NAME}.service
@@ -260,7 +295,7 @@ Type=simple
 User=$USER
 Group=$USER
 WorkingDirectory=$PROJECT_DIR
-ExecStart=/usr/local/bin/ngrok http 5000 --log stdout
+ExecStart=/usr/local/bin/ngrok http 8000 --log stdout
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -286,7 +321,7 @@ create_management_scripts() {
 #!/bin/bash
 cd $PROJECT_DIR
 source venv/bin/activate
-sudo python3 ultrasonic_server.py
+python3 ultrasonic_server.py
 EOF
     chmod +x "$PROJECT_DIR/start.sh"
     
@@ -327,10 +362,15 @@ if [ -n "\$NGROK_URL" ] && [ "\$NGROK_URL" != "No HTTPS tunnel found" ] && [ "\$
     echo "✅ ngrok tunnel is active!"
     echo "🌐 External URL: \$NGROK_URL"
     echo
-    echo "📡 Test your API:"
-    echo "   \$NGROK_URL/"
-    echo "   \$NGROK_URL/distance"
-    echo "   \$NGROK_URL/health"
+    echo "📡 Test your Multi-Sensor API:"
+    echo "   \$NGROK_URL/ (Homepage with documentation)"
+    echo "   \$NGROK_URL/docs (Swagger UI)"
+    echo "   \$NGROK_URL/sensors (All sensor readings)"
+    echo "   \$NGROK_URL/sensors/ultrasonic (Distance sensor)"
+    echo "   \$NGROK_URL/sensors/mq135 (Air quality sensor)"
+    echo "   \$NGROK_URL/sensors/dht11 (Temperature/Humidity)"
+    echo "   \$NGROK_URL/sensors/alerts (Sensor alerts)"
+    echo "   \$NGROK_URL/health (Health check)"
     echo
     echo "📋 Use this URL to connect from any device on any network!"
 else
@@ -372,7 +412,7 @@ case "\$1" in
         $PROJECT_DIR/get_ngrok_url.sh
         ;;
     status)
-        echo "=== API Service Status ==="
+        echo "=== Multi-Sensor API Service Status ==="
         sudo systemctl status $SERVICE_NAME --no-pager
         echo
         echo "=== ngrok Service Status ==="
@@ -435,6 +475,14 @@ setup_gpio_permissions() {
     else
         print_warning "GPIO group not found. Service will run as root."
     fi
+    
+    # Add user to spi group for MQ-135 sensor
+    if getent group spi > /dev/null 2>&1; then
+        sudo usermod -a -G spi $USER
+        print_success "User added to spi group"
+    else
+        print_warning "SPI group not found."
+    fi
 }
 
 test_installation() {
@@ -444,11 +492,18 @@ test_installation() {
     cd "$PROJECT_DIR"
     source venv/bin/activate
     
-    python3 -c "import flask; print('Flask:', flask.__version__)" 2>/dev/null || print_error "Flask import failed"
-    python3 -c "import flask_cors; print('Flask-CORS imported successfully')" 2>/dev/null || print_warning "Flask-CORS import failed"
+    python3 -c "import fastapi; print('FastAPI:', fastapi.__version__)" 2>/dev/null || print_error "FastAPI import failed"
+    python3 -c "import uvicorn; print('Uvicorn imported successfully')" 2>/dev/null || print_error "Uvicorn import failed"
+    python3 -c "import pydantic; print('Pydantic:', pydantic.__version__)" 2>/dev/null || print_error "Pydantic import failed"
     
     # Try to import RPi.GPIO (might fail on non-Pi systems)
     python3 -c "import RPi.GPIO; print('RPi.GPIO imported successfully')" 2>/dev/null || print_warning "RPi.GPIO import failed (normal on non-Pi systems)"
+    
+    # Try to import Adafruit_DHT
+    python3 -c "import Adafruit_DHT; print('Adafruit_DHT imported successfully')" 2>/dev/null || print_warning "Adafruit_DHT import failed"
+    
+    # Try to import spidev
+    python3 -c "import spidev; print('spidev imported successfully')" 2>/dev/null || print_warning "spidev import failed"
     
     # Test ngrok
     if command -v ngrok &> /dev/null; then
@@ -467,12 +522,14 @@ display_usage_info() {
     print_success "🎉 Setup completed successfully!"
     echo
     echo "📁 Project directory: $PROJECT_DIR"
-    echo "🏠 Local API URL: http://$IP:5000"
+    echo "🏠 Local API URL: http://$IP:8000"
+    echo "📚 API Documentation: http://$IP:8000/docs (Swagger UI)"
     echo "🌐 External access: via ngrok (see commands below)"
     echo
     echo "📋 Next steps:"
-    echo "  1. If you haven't already, upload your ultrasonic_server.py file to:"
-    echo "     $PROJECT_DIR"
+    echo "  1. If you haven't already, upload your files to:"
+    echo "     ultrasonic_server.py → $PROJECT_DIR"
+    echo "     requirements.txt → $PROJECT_DIR"
     echo
     if [ -z "$NGROK_AUTH_TOKEN" ]; then
         echo "  2. Configure ngrok auth token:"
@@ -480,11 +537,24 @@ display_usage_info() {
         echo "     (Get your token from https://dashboard.ngrok.com/get-started/your-authtoken)"
         echo
     fi
-    echo "  3. Wire your HC-SR04 sensor:"
+    echo "  3. Wire your sensors:"
+    echo
+    echo "     🌊 HC-SR04 Ultrasonic Sensor:"
     echo "     VCC  → 5V (Pin 2 or 4)"
     echo "     GND  → Ground (Pin 6, 9, 14, 20, 25, 30, 34, or 39)"
     echo "     Trig → GPIO 18 (Pin 12)"
     echo "     Echo → GPIO 24 (Pin 18)"
+    echo
+    echo "     🌬️ MQ-135 Air Quality Sensor:"
+    echo "     VCC → 5V"
+    echo "     GND → Ground"
+    echo "     A0  → MCP3008 CH0 → SPI (CE0)"
+    echo
+    echo "     🌡️ DHT11 Temperature/Humidity Sensor:"
+    echo "     VCC  → 3.3V"
+    echo "     GND  → Ground"
+    echo "     Data → GPIO 22"
+    echo "     + 10kΩ pull-up resistor between VCC and Data"
     echo
     echo "🚀 Management commands:"
     echo "  Start both services:  $PROJECT_DIR/manage.sh start"
@@ -501,15 +571,26 @@ display_usage_info() {
     echo "  sudo systemctl stop $NGROK_SERVICE_NAME"
     echo
     echo "📡 Test API endpoints:"
-    echo "  Local:  curl http://localhost:5000/distance"
+    echo "  Local:  curl http://localhost:8000/sensors"
     echo "  Remote: Use the ngrok URL from 'manage.sh url'"
+    echo
+    echo "🌐 API Endpoints:"
+    echo "  /                    - Homepage with documentation"
+    echo "  /docs               - Interactive API docs (Swagger)"
+    echo "  /sensors            - All sensor readings"
+    echo "  /sensors/alerts     - Sensor alerts"
+    echo "  /sensors/ultrasonic - Distance sensor only"
+    echo "  /sensors/mq135      - Air quality sensor only"
+    echo "  /sensors/dht11      - Temperature/humidity sensor only"
+    echo "  /health             - Health check all sensors"
+    echo "  /config             - Sensor configurations"
     echo
     echo "🌐 Getting your external URL:"
     echo "  After starting services, run: $PROJECT_DIR/manage.sh url"
     echo "  This URL will work from anywhere in the world!"
     echo
     if [ -z "$REPO_URL" ]; then
-        print_warning "Remember to upload your ultrasonic_server.py file before starting the service!"
+        print_warning "Remember to upload your ultrasonic_server.py and requirements.txt files before starting the service!"
     fi
     
     if [ -z "$NGROK_AUTH_TOKEN" ]; then
@@ -519,7 +600,7 @@ display_usage_info() {
 
 # Main execution
 main() {
-    echo "🚀 Ultrasonic Sensor API Server Setup with ngrok"
+    echo "🚀 Multi-Sensor FastAPI Server Setup with ngrok"
     echo "==============================================="
     
     # Parse arguments
