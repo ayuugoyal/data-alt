@@ -44,7 +44,8 @@ class SensorReading(BaseModel):
     GoogleDriveURL: str
 
 class ApiResponse(BaseModel):
-    data: List[SensorReading]
+    success: bool
+    data: List[Dict]
     shouldSubscribe: str
 
 class BaseSensor:
@@ -441,19 +442,19 @@ async def home():
     """
     return html_content
 
-@app.get("/sensors")
+@app.get("/sensors", response_model=ApiResponse)
 async def get_all_sensors():
     """Get readings from all sensors"""
     try:
-        readings = {}
+        readings = []
         for sensor_type, sensor in sensors.items():
-            readings[sensor_type] = sensor.get_reading()
+            readings.append(sensor.get_reading())
         
-        return {
-            "success": True,
-            "data": readings,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
+        return ApiResponse(
+            success=True,
+            data=readings,
+            shouldSubscribe="true"
+        )
     except Exception as e:
         logger.error(f"Error getting all sensors: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -473,6 +474,7 @@ async def get_sensor_alerts():
         all_alerts.sort(key=lambda x: x['Date'], reverse=True)
         
         return ApiResponse(
+            success=True,
             data=all_alerts,
             shouldSubscribe="true"
         )
@@ -480,7 +482,7 @@ async def get_sensor_alerts():
         logger.error(f"Error getting sensor alerts: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/sensors/{sensor_type}")
+@app.get("/sensors/{sensor_type}", response_model=ApiResponse)
 async def get_sensor(sensor_type: str):
     """Get reading from a specific sensor"""
     if sensor_type not in sensors:
@@ -490,16 +492,17 @@ async def get_sensor(sensor_type: str):
         )
     
     try:
-        reading = sensors[sensor_type].get_reading()
-        return {
-            "success": True,
-            "data": reading
-        }
+        reading = [sensors[sensor_type].get_reading()]
+        return ApiResponse(
+            success=True,
+            data=reading,
+            shouldSubscribe="true"
+        )
     except Exception as e:
         logger.error(f"Error getting {sensor_type} sensor: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/sensors/{sensor_type}/live")
+@app.get("/sensors/{sensor_type}/live", response_model=ApiResponse)
 async def get_live_sensor(sensor_type: str):
     """Get a fresh reading from a specific sensor"""
     if sensor_type not in sensors:
@@ -510,12 +513,13 @@ async def get_live_sensor(sensor_type: str):
     
     try:
         sensors[sensor_type].update_reading()
-        reading = sensors[sensor_type].get_reading()
-        return {
-            "success": True,
-            "data": reading,
-            "note": "Fresh measurement taken"
-        }
+        reading = [sensors[sensor_type].get_reading()]
+        return ApiResponse(
+            success=True,
+            data=reading,
+            shouldSubscribe="true",
+            note="Fresh measurement taken"
+        )
     except Exception as e:
         logger.error(f"Error getting live {sensor_type} sensor: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -547,9 +551,13 @@ async def health_check():
                 overall_healthy = False
         
         return {
-            'status': 'healthy' if overall_healthy else 'degraded',
-            'timestamp': datetime.now(timezone.utc).isoformat(),
-            'sensors': health_status
+            'success': True,
+            'data': [{
+                'status': 'healthy' if overall_healthy else 'degraded',
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'sensors': health_status
+            }],
+            'shouldSubscribe': "true"
         }
     except Exception as e:
         logger.error(f"Health check error: {e}")
@@ -558,18 +566,20 @@ async def health_check():
 @app.get("/config")
 async def get_config():
     """Get configuration for all sensors"""
-    config = {}
+    config = []
     for sensor_type, sensor in sensors.items():
         reading = sensor.get_reading()
-        config[sensor_type] = {
+        config.append({
             'sensor_id': reading['sensor_id'],
             'sensor_type': reading['sensor_type'],
             'pins': reading['pins'],
             'asset_id': sensor.asset_id
-        }
+        })
     
     return {
-        'sensors': config,
+        'success': True,
+        'data': config,
+        'shouldSubscribe': "true",
         'api_version': '2.0.0',
         'update_interval': '1_second'
     }
