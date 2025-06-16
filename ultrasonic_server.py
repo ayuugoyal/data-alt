@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from threading import Thread, Lock
 import logging
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 
 # Uncomment these imports when running on Raspberry Pi
 import RPi.GPIO as GPIO
@@ -580,92 +581,62 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
-@app.get("/sensors", response_model=ApiResponse)
+@app.get("/sensors", response_class=PlainTextResponse)
 async def get_all_sensors():
-    """Get readings from all sensors"""
     try:
         readings = []
         for sensor_type, sensor in sensors.items():
             readings.append(sensor.get_reading())
-        
-        return ApiResponse(
-            success=True,
-            data=readings,
-            shouldSubscribe="true"
-        )
+        response = ApiResponse(success=True, data=readings, shouldSubscribe="true")
+        return json.dumps(response.dict(), indent=2)
     except Exception as e:
         logger.error(f"Error getting all sensors: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/sensors/alerts", response_model=ApiResponse)
+    
+@app.get("/sensors/alerts", response_class=PlainTextResponse)
 async def get_sensor_alerts():
-    """Get all sensor alerts in the specified format"""
     try:
         all_alerts = []
-        
         for sensor in sensors.values():
             with sensor.lock:
-                all_alerts.extend(sensor.alerts[-10:])  # Last 10 alerts per sensor
-        
+                all_alerts.extend(sensor.alerts[-10:])
         all_alerts.sort(key=lambda x: x['Date'], reverse=True)
-        
-        return ApiResponse(
-            success=True,
-            data=all_alerts,
-            shouldSubscribe="true"
-        )
+        response = ApiResponse(success=True, data=all_alerts, shouldSubscribe="true")
+        return json.dumps(response.dict(), indent=2)
     except Exception as e:
         logger.error(f"Error getting sensor alerts: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/sensors/{sensor_type}", response_model=ApiResponse)
-async def get_sensor(sensor_type: str):
-    """Get reading from a specific sensor"""
-    if sensor_type not in sensors:
-        raise HTTPException(
-            status_code=404, 
-            detail=f"Sensor type '{sensor_type}' not found. Available: {list(sensors.keys())}"
-        )
     
+@app.get("/sensors/{sensor_type}", response_class=PlainTextResponse)
+async def get_sensor(sensor_type: str):
+    if sensor_type not in sensors:
+        raise HTTPException(status_code=404, detail=f"Sensor type '{sensor_type}' not found. Available: {list(sensors.keys())}")
     try:
         reading = [sensors[sensor_type].get_reading()]
-        return ApiResponse(
-            success=True,
-            data=reading,
-            shouldSubscribe="true"
-        )
+        response = ApiResponse(success=True, data=reading, shouldSubscribe="true")
+        return json.dumps(response.dict(), indent=2)
     except Exception as e:
         logger.error(f"Error getting {sensor_type} sensor: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/sensors/{sensor_type}/live", response_model=ApiResponse)
+@app.get("/sensors/{sensor_type}/live", response_class=PlainTextResponse)
 async def get_live_sensor(sensor_type: str):
-    """Get a fresh reading from a specific sensor"""
     if sensor_type not in sensors:
-        raise HTTPException(
-            status_code=404, 
-            detail=f"Sensor type '{sensor_type}' not found. Available: {list(sensors.keys())}"
-        )
-    
+        raise HTTPException(status_code=404, detail=f"Sensor type '{sensor_type}' not found. Available: {list(sensors.keys())}")
     try:
         sensors[sensor_type].update_reading()
         reading = [sensors[sensor_type].get_reading()]
-        return ApiResponse(
-            success=True,
-            data=reading,
-            shouldSubscribe="true"
-        )
+        response = ApiResponse(success=True, data=reading, shouldSubscribe="true")
+        return json.dumps(response.dict(), indent=2)
     except Exception as e:
         logger.error(f"Error getting live {sensor_type} sensor: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/health")
+@app.get("/health", response_class=PlainTextResponse)
 async def health_check():
-    """Health check for all sensors"""
     try:
         health_status = {}
         overall_healthy = True
-        
         for sensor_type, sensor in sensors.items():
             try:
                 sensor.update_reading()
@@ -684,8 +655,7 @@ async def health_check():
                     'error': str(e)
                 }
                 overall_healthy = False
-        
-        return {
+        response = {
             'success': True,
             'data': [{
                 'status': 'healthy' if overall_healthy else 'degraded',
@@ -694,13 +664,13 @@ async def health_check():
             }],
             'shouldSubscribe': "true"
         }
+        return json.dumps(response, indent=2)
     except Exception as e:
         logger.error(f"Health check error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/config")
+@app.get("/config", response_class=PlainTextResponse)
 async def get_config():
-    """Get configuration for all sensors"""
     config = []
     for sensor_type, sensor in sensors.items():
         reading = sensor.get_reading()
@@ -710,8 +680,7 @@ async def get_config():
             'pins': reading['pins'],
             'asset_id': sensor.asset_id
         })
-    
-    return {
+    response = {
         'success': True,
         'data': config,
         'shouldSubscribe': "true",
@@ -719,6 +688,7 @@ async def get_config():
         'update_interval': '1_second',
         'connection_type': 'direct_gpio'
     }
+    return json.dumps(response, indent=2)
 
 def continuous_reading():
     """Background task for continuous sensor readings"""
