@@ -47,7 +47,6 @@ class SensorReading(BaseModel):
     GoogleDriveURL: str
 
 class ApiResponse(BaseModel):
-    success: bool
     data: List[Dict]
     shouldSubscribe: str
 
@@ -135,10 +134,6 @@ class UltrasonicSensor(BaseSensor):
             
             return round(distance, 2)
             
-            
-            # Simulate reading for demo
-            # import random
-            # return round(random.uniform(5, 250), 2)
         except Exception as e:
             logger.error(f"Error measuring distance: {e}")
             return None
@@ -284,10 +279,10 @@ class MQ135Sensor(BaseSensor):
             }
 
 class DHT11Sensor(BaseSensor):
-    def __init__(self, sensor_id: str = "DHT11-01", asset_id: str = "TEMP-HUM-01", 
+    def __utting(self, sensor_id: str = "DHT11-01", asset_id: str = "TEMP-HUM-01", 
                  data_pin: int = 22):
         super().__init__(sensor_id, asset_id)
-        self.data_pin = data_pin
+        self.data_pin = data_p
         self.temperature = 0.0
         self.humidity = 0.0
         self.temp_high_threshold = 35.0  # Celsius
@@ -587,7 +582,7 @@ async def get_all_sensors():
         readings = []
         for sensor_type, sensor in sensors.items():
             readings.append(sensor.get_reading())
-        response = ApiResponse(success=True, data=readings, shouldSubscribe="true")
+        response = ApiResponse(data=readings, shouldSubscribe="true")
         return json.dumps(response.dict(), indent=2)
     except Exception as e:
         logger.error(f"Error getting all sensors: {e}")
@@ -613,7 +608,7 @@ async def get_sensor(sensor_type: str):
         raise HTTPException(status_code=404, detail=f"Sensor type '{sensor_type}' not found. Available: {list(sensors.keys())}")
     try:
         reading = [sensors[sensor_type].get_reading()]
-        response = ApiResponse(success=True, data=reading, shouldSubscribe="true")
+        response = ApiResponse(data=reading, shouldSubscribe="true")
         return json.dumps(response.dict(), indent=2)
     except Exception as e:
         logger.error(f"Error getting {sensor_type} sensor: {e}")
@@ -626,7 +621,7 @@ async def get_live_sensor(sensor_type: str):
     try:
         sensors[sensor_type].update_reading()
         reading = [sensors[sensor_type].get_reading()]
-        response = ApiResponse(success=True, data=reading, shouldSubscribe="true")
+        response = ApiResponse(data=reading, shouldSubscribe="true")
         return json.dumps(response.dict(), indent=2)
     except Exception as e:
         logger.error(f"Error getting live {sensor_type} sensor: {e}")
@@ -656,7 +651,6 @@ async def health_check():
                 }
                 overall_healthy = False
         response = {
-            'success': True,
             'data': [{
                 'status': 'healthy' if overall_healthy else 'degraded',
                 'timestamp': datetime.now(timezone.utc).isoformat(),
@@ -681,7 +675,6 @@ async def get_config():
             'asset_id': sensor.asset_id
         })
     response = {
-        'success': True,
         'data': config,
         'shouldSubscribe': "true",
         'api_version': '2.1.0',
