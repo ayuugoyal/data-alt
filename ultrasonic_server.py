@@ -3,6 +3,7 @@
 Multi-Sensor API Server for Raspberry Pi
 Supports Ultrasonic (HC-SR04), MQ-135 Air Quality, DHT11 Temperature/Humidity,
 LDR Light Sensor, and PIR Motion Sensor
+Direct GPIO connections without MCP3008
 Exposes sensor data via FastAPI REST API
 """
 
@@ -17,8 +18,8 @@ from threading import Thread, Lock
 import logging
 
 # Uncomment these imports when running on Raspberry Pi
-# import RPi.GPIO as GPIO
-# import Adafruit_DHT
+import RPi.GPIO as GPIO
+import Adafruit_DHT
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -87,12 +88,55 @@ class UltrasonicSensor(BaseSensor):
         self.min_distance_threshold = 10.0  # cm
         self.max_distance_threshold = 200.0  # cm
         
+        # Initialize GPIO pins
+        self.setup_pins()
+        
+    def setup_pins(self):
+        """Setup GPIO pins for ultrasonic sensor"""
+        try:
+            # Uncomment when running on Raspberry Pi
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(self.trigger_pin, GPIO.OUT)
+            GPIO.setup(self.echo_pin, GPIO.IN)
+            GPIO.output(self.trigger_pin, False)
+            pass
+        except Exception as e:
+            logger.error(f"Error setting up ultrasonic pins: {e}")
+        
     def measure_distance(self) -> Optional[float]:
         """Measure distance using ultrasonic sensor (HC-SR04)"""
         try:
+            
+            # Uncomment when running on Raspberry Pi
+            GPIO.output(self.trigger_pin, True)
+            time.sleep(0.00001)
+            GPIO.output(self.trigger_pin, False)
+            
+            start_time = time.time()
+            stop_time = time.time()
+            
+            # Wait for echo to start
+            while GPIO.input(self.echo_pin) == 0:
+                start_time = time.time()
+                if time.time() - start_time > 0.1:  # Timeout
+                    return None
+            
+            # Wait for echo to stop
+            while GPIO.input(self.echo_pin) == 1:
+                stop_time = time.time()
+                if stop_time - start_time > 0.1:  # Timeout
+                    return None
+            
+            # Calculate distance
+            time_elapsed = stop_time - start_time
+            distance = (time_elapsed * 34300) / 2  # Speed of sound = 343 m/s
+            
+            return round(distance, 2)
+            
+            
             # Simulate reading for demo
-            import random
-            return round(random.uniform(5, 250), 2)
+            # import random
+            # return round(random.uniform(5, 250), 2)
         except Exception as e:
             logger.error(f"Error measuring distance: {e}")
             return None
@@ -135,28 +179,70 @@ class UltrasonicSensor(BaseSensor):
 
 class MQ135Sensor(BaseSensor):
     def __init__(self, sensor_id: str = "MQ135-01", asset_id: str = "AIR-QUALITY-01", 
-                 analog_pin: int = 0):  # MCP3008 channel
+                 digital_pin: int = 25, analog_pin: int = 26):
         super().__init__(sensor_id, asset_id)
-        self.analog_pin = analog_pin
+        self.digital_pin = digital_pin  # Digital output pin
+        self.analog_pin = analog_pin    # Using PWM to simulate analog reading
         self.air_quality_ppm = 0.0
+        self.gas_detected = False
         self.danger_threshold = 1000  # ppm
         self.warning_threshold = 500  # ppm
         
-    def read_air_quality(self) -> Optional[float]:
+        self.setup_pins()
+        
+    def setup_pins(self):
+        """Setup GPIO pins for MQ-135 sensor"""
+        try:
+            # Uncomment when running on Raspberry Pi
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(self.digital_pin, GPIO.IN)
+            GPIO.setup(self.analog_pin, GPIO.IN)
+            pass
+        except Exception as e:
+            logger.error(f"Error setting up MQ-135 pins: {e}")
+        
+    def read_air_quality(self) -> Optional[tuple]:
         """Read air quality from MQ-135 sensor"""
         try:
-            # Simulate reading for demo
-            import random
-            return round(random.uniform(50, 1200), 2)
+            
+            # Uncomment when running on Raspberry Pi
+            # Read digital pin for gas detection
+            gas_detected = GPIO.input(self.digital_pin)
+            
+            # For analog reading, we use a simple capacitor discharge method
+            # This is a workaround since Pi doesn't have built-in ADC
+            def read_analog_value():
+                count = 0
+                GPIO.setup(self.analog_pin, GPIO.OUT)
+                GPIO.output(self.analog_pin, GPIO.LOW)
+                time.sleep(0.1)
+                
+                GPIO.setup(self.analog_pin, GPIO.IN)
+                while (GPIO.input(self.analog_pin) == GPIO.LOW):
+                    count += 1
+                    if count > 10000:  # Prevent infinite loop
+                        break
+                
+                return count
+            
+            analog_value = read_analog_value()
+            
+            # Convert to approximate PPM (this is a simplified conversion)
+            # In reality, you'd need calibration for accurate readings
+            ppm = (analog_value / 1000) * 1000  # Simplified conversion
+            
+            return gas_detected, round(ppm, 2)
+
         except Exception as e:
             logger.error(f"Error reading air quality: {e}")
-            return None
+            return None, None
             
     def update_reading(self):
         """Update air quality reading and check for alerts"""
-        ppm = self.read_air_quality()
-        if ppm is not None:
+        gas_detected, ppm = self.read_air_quality()
+        if gas_detected is not None and ppm is not None:
             with self.lock:
+                self.gas_detected = gas_detected
                 self.air_quality_ppm = ppm
                 self.last_reading_time = datetime.now(timezone.utc)
                 
@@ -188,10 +274,11 @@ class MQ135Sensor(BaseSensor):
                 'sensor_type': 'air_quality',
                 'sensor_id': self.sensor_id,
                 'air_quality_ppm': self.air_quality_ppm,
+                'gas_detected': self.gas_detected,
                 'quality_level': quality_level,
                 'timestamp': self.last_reading_time.isoformat() if self.last_reading_time else None,
                 'status': 'active' if self.last_reading_time else 'no_reading',
-                'pins': {'analog': self.analog_pin}
+                'pins': {'digital': self.digital_pin, 'analog': self.analog_pin}
             }
 
 class DHT11Sensor(BaseSensor):
@@ -209,11 +296,14 @@ class DHT11Sensor(BaseSensor):
     def read_temp_humidity(self) -> tuple:
         """Read temperature and humidity from DHT11"""
         try:
-            # Simulate reading for demo
-            import random
-            humidity = random.uniform(30, 90)
-            temperature = random.uniform(15, 40)
-            return humidity, temperature
+            
+            # Uncomment when running on Raspberry Pi
+            humidity, temperature = Adafruit_DHT.read_retry(Adafruit_DHT.DHT11, self.data_pin)
+            if humidity is not None and temperature is not None:
+                return humidity, temperature
+            else:
+                return None, None
+            
         except Exception as e:
             logger.error(f"Error reading DHT11: {e}")
             return None, None
@@ -273,22 +363,56 @@ class DHT11Sensor(BaseSensor):
 
 class LDRSensor(BaseSensor):
     def __init__(self, sensor_id: str = "LDR-01", asset_id: str = "LIGHT-SENSOR-01", 
-                 analog_pin: int = 1):  # MCP3008 channel 1
+                 ldr_pin: int = 21):
         super().__init__(sensor_id, asset_id)
-        self.analog_pin = analog_pin
+        self.ldr_pin = ldr_pin
         self.light_level = 0
         self.light_percentage = 0.0
         self.dark_threshold = 20.0  # Below 20% is considered dark
         self.bright_threshold = 80.0  # Above 80% is considered very bright
         
-    def read_light_level(self) -> Optional[tuple]:
-        """Read light level from LDR sensor via MCP3008"""
+        self.setup_pins()
+        
+    def setup_pins(self):
+        """Setup GPIO pins for LDR sensor"""
         try:
-            # Simulate reading for demo
-            import random
-            raw_value = random.randint(0, 1023)
-            percentage = (raw_value / 1023) * 100
+            # Uncomment when running on Raspberry Pi
+            GPIO.setmode(GPIO.BCM)
+            pass
+        except Exception as e:
+            logger.error(f"Error setting up LDR pins: {e}")
+        
+    def read_light_level(self) -> Optional[tuple]:
+        """Read light level from LDR sensor using capacitor discharge method"""
+        try:
+            
+            # Uncomment when running on Raspberry Pi
+            def rc_time():
+                count = 0
+                # Output on the pin for a short time to charge the capacitor
+                GPIO.setup(self.ldr_pin, GPIO.OUT)
+                GPIO.output(self.ldr_pin, GPIO.LOW)
+                time.sleep(0.1)
+                
+                # Change the pin back to input
+                GPIO.setup(self.ldr_pin, GPIO.IN)
+                
+                # Count until the pin goes high
+                while (GPIO.input(self.ldr_pin) == GPIO.LOW):
+                    count += 1
+                    if count > 100000:  # Prevent infinite loop
+                        break
+                
+                return count
+            
+            raw_value = rc_time()
+            
+            # Convert to percentage (calibrate these values based on your setup)
+            max_reading = 50000  # Adjust based on your environment
+            percentage = max(0, min(100, (1 - (raw_value / max_reading)) * 100))
+            
             return raw_value, round(percentage, 2)
+            
         except Exception as e:
             logger.error(f"Error reading LDR: {e}")
             return None, None
@@ -334,7 +458,7 @@ class LDRSensor(BaseSensor):
                 'light_condition': light_condition,
                 'timestamp': self.last_reading_time.isoformat() if self.last_reading_time else None,
                 'status': 'active' if self.last_reading_time else 'no_reading',
-                'pins': {'analog': self.analog_pin}
+                'pins': {'ldr': self.ldr_pin}
             }
 
 class PIRSensor(BaseSensor):
@@ -347,12 +471,25 @@ class PIRSensor(BaseSensor):
         self.last_motion_time = None
         self.motion_timeout = 30  # seconds - alert if no motion for this long
         
+        self.setup_pins()
+        
+    def setup_pins(self):
+        """Setup GPIO pins for PIR sensor"""
+        try:
+            # Uncomment when running on Raspberry Pi
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(self.data_pin, GPIO.IN)
+            pass
+        except Exception as e:
+            logger.error(f"Error setting up PIR pins: {e}")
+        
     def read_motion(self) -> bool:
         """Read motion detection from PIR sensor"""
         try:
-            # Simulate reading for demo
-            import random
-            return random.choice([True, False, False, False])  # 25% chance of motion
+            
+            # Uncomment when running on Raspberry Pi
+            return GPIO.input(self.data_pin)
+            
         except Exception as e:
             logger.error(f"Error reading PIR: {e}")
             return False
@@ -409,12 +546,12 @@ class PIRSensor(BaseSensor):
                 'pins': {'data': self.data_pin}
             }
 
-# Initialize sensors
-ultrasonic_sensor = UltrasonicSensor()
-mq135_sensor = MQ135Sensor()
-dht11_sensor = DHT11Sensor()
-ldr_sensor = LDRSensor()
-pir_sensor = PIRSensor()
+# Initialize sensors with direct GPIO pins
+ultrasonic_sensor = UltrasonicSensor(trigger_pin=18, echo_pin=24)
+mq135_sensor = MQ135Sensor(digital_pin=25, analog_pin=26)
+dht11_sensor = DHT11Sensor(data_pin=22)
+ldr_sensor = LDRSensor(ldr_pin=21)
+pir_sensor = PIRSensor(data_pin=23)
 
 sensors = {
     'ultrasonic': ultrasonic_sensor,
@@ -426,9 +563,9 @@ sensors = {
 
 # FastAPI app
 app = FastAPI(
-    title="Multi-Sensor IoT API",
-    description="REST API for Ultrasonic, MQ-135, DHT11, LDR, and PIR sensors on Raspberry Pi",
-    version="2.0.0",
+    title="Multi-Sensor IoT API - Direct GPIO",
+    description="REST API for Ultrasonic, MQ-135, DHT11, LDR, and PIR sensors on Raspberry Pi with direct GPIO connections",
+    version="2.1.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -568,8 +705,9 @@ async def get_config():
         'success': True,
         'data': config,
         'shouldSubscribe': "true",
-        'api_version': '2.0.0',
-        'update_interval': '1_second'
+        'api_version': '2.1.0',
+        'update_interval': '1_second',
+        'connection_type': 'direct_gpio'
     }
 
 def continuous_reading():
@@ -589,14 +727,14 @@ async def startup_event():
     reading_thread = Thread(target=continuous_reading, daemon=True)
     reading_thread.start()
     logger.info("Background reading thread started")
-    logger.info("Multi-Sensor API Server started with 5 sensors")
+    logger.info("Multi-Sensor API Server started with 5 sensors - Direct GPIO connections")
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup when the app shuts down"""
     try:
         # Uncomment when using real GPIO
-        # GPIO.cleanup()
+        GPIO.cleanup()
         logger.info("GPIO cleaned up")
     except Exception as e:
         logger.error(f"Cleanup error: {e}")
