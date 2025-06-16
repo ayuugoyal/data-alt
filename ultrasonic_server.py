@@ -601,7 +601,7 @@ async def get_sensor_alerts():
             with sensor.lock:
                 all_alerts.extend(sensor.alerts[-10:])
         all_alerts.sort(key=lambda x: x['Date'], reverse=True)
-        response = ApiResponse(success=True, data=all_alerts, shouldSubscribe="true")
+        response = ApiResponse(data=all_alerts, shouldSubscribe="true")
         return json.dumps(response.dict(), indent=2)
     except Exception as e:
         logger.error(f"Error getting sensor alerts: {e}")
