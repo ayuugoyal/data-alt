@@ -61,7 +61,7 @@ class BaseSensor:
         alert_id = f"{self.sensor_id}_{int(time.time())}"
         return {
             "AlertType": alert_type,
-            "assetId": self.asset_id,
+            "assetId": "MCN-02",
             "Description": description,
             "Date": datetime.now(timezone.utc).isoformat(),
             "Report": "NaN",
@@ -445,9 +445,9 @@ class LDRSensor(BaseSensor):
         """Get current light level reading"""
         with self.lock:
             light_condition = "Normal"
-            if self.light_percentage < self.dark_threshold:
+            if self.light_percentage > self.dark_threshold:
                 light_condition = "Dark"
-            elif self.light_percentage > self.bright_threshold:
+            elif self.light_percentage < self.bright_threshold:
                 light_condition = "Very Bright"
                 
             return {
