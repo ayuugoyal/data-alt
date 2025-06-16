@@ -134,6 +134,10 @@ class UltrasonicSensor(BaseSensor):
             
             return round(distance, 2)
             
+            
+            # Simulate reading for demo
+            # import random
+            # return round(random.uniform(5, 250), 2)
         except Exception as e:
             logger.error(f"Error measuring distance: {e}")
             return None
@@ -279,10 +283,10 @@ class MQ135Sensor(BaseSensor):
             }
 
 class DHT11Sensor(BaseSensor):
-    def __utting(self, sensor_id: str = "DHT11-01", asset_id: str = "TEMP-HUM-01", 
+    def __init__(self, sensor_id: str = "DHT11-01", asset_id: str = "TEMP-HUM-01", 
                  data_pin: int = 22):
         super().__init__(sensor_id, asset_id)
-        self.data_pin = data_p
+        self.data_pin = data_pin
         self.temperature = 0.0
         self.humidity = 0.0
         self.temp_high_threshold = 35.0  # Celsius
