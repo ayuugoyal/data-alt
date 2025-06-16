@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Multi-Sensor FastAPI Server Setup Script with ngrok
-# This script sets up the complete environment for the multi-sensor FastAPI server with external access via ngrok
+# Multi-Sensor FastAPI Server Setup Script with Azure Dev Tunnels
+# This script sets up the complete environment for the multi-sensor FastAPI server with external access via Azure Dev Tunnels
 
 set -e  # Exit on any error
 
@@ -17,9 +17,10 @@ PROJECT_NAME="multi-sensor-api"
 PROJECT_DIR="$HOME/$PROJECT_NAME"
 REPO_URL=""  # Will be set if provided as argument
 SERVICE_NAME="multi-sensor-api"
-NGROK_SERVICE_NAME="multi-sensor-ngrok"
+TUNNEL_SERVICE_NAME="multi-sensor-tunnel"
 USER=$(whoami)
-NGROK_AUTH_TOKEN=""  # Will be prompted for
+AZURE_USER_EMAIL=""  # Will be prompted for
+TUNNEL_NAME="multi-sensor-tunnel"
 
 # Functions
 print_status() {
@@ -57,27 +58,29 @@ check_raspberry_pi() {
     fi
 }
 
-get_ngrok_auth_token() {
+get_azure_account_info() {
     echo
-    print_status "🌐 Setting up ngrok for external access"
-    echo "To use ngrok, you need a free account and auth token from https://ngrok.com"
+    print_status "🌐 Setting up Azure Dev Tunnels for external access"
     echo
-    echo "Steps to get your auth token:"
-    echo "1. Go to https://ngrok.com and sign up for a free account"
-    echo "2. Go to https://dashboard.ngrok.com/get-started/your-authtoken"
-    echo "3. Copy your auth token"
+    echo "Azure Dev Tunnels provides secure access to local applications via Azure."
+    echo "You'll need a Microsoft account (personal) or Azure account to use this service."
     echo
-    read -p "Do you have an ngrok auth token? (y/N): " -n 1 -r
+    echo "Benefits of Azure Dev Tunnels:"
+    echo "• Free tier available"
+    echo "• Secure HTTPS tunnels"
+    echo "• Custom subdomain support"
+    echo "• Integrated with Microsoft ecosystem"
+    echo
+    read -p "Do you have a Microsoft/Azure account for Dev Tunnels? (y/N): " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        read -p "Enter your ngrok auth token: " NGROK_AUTH_TOKEN
-        if [ -z "$NGROK_AUTH_TOKEN" ]; then
-            print_warning "No auth token provided. ngrok will be installed but not configured."
-            print_warning "You can configure it later using: ngrok config add-authtoken YOUR_TOKEN"
+        read -p "Enter your Microsoft account email: " AZURE_USER_EMAIL
+        if [ -z "$AZURE_USER_EMAIL" ]; then
+            print_warning "No email provided. You'll need to login manually later."
         fi
     else
-        print_warning "Skipping ngrok auth token setup."
-        print_status "You can set it up later using: ngrok config add-authtoken YOUR_TOKEN"
+        print_warning "You'll need to create a Microsoft account and login manually."
+        print_status "Visit: https://signup.live.com to create a free Microsoft account"
     fi
 }
 
@@ -100,37 +103,65 @@ install_dependencies() {
         curl \
         nano \
         wget \
-        unzip
+        unzip \
+        jq
     print_success "System packages installed"
 }
 
-install_ngrok() {
-    print_status "Installing ngrok..."
+install_azure_dev_tunnels() {
+    print_status "Installing Azure Dev Tunnels CLI..."
     
-    # Download and install ngrok
     cd /tmp
     
     # Detect architecture
     ARCH=$(uname -m)
     if [[ "$ARCH" == "armv7l" ]] || [[ "$ARCH" == "armv6l" ]]; then
-        NGROK_URL="https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm.tgz"
+        DEVTUNNEL_URL="https://aka.ms/TunnelsCliDownload/linux-arm"
     elif [[ "$ARCH" == "aarch64" ]]; then
-        NGROK_URL="https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.tgz"
+        DEVTUNNEL_URL="https://aka.ms/TunnelsCliDownload/linux-arm64"
     else
-        NGROK_URL="https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz"
+        DEVTUNNEL_URL="https://aka.ms/TunnelsCliDownload/linux-x64"
     fi
     
-    wget -O ngrok.tgz "$NGROK_URL"
-    tar -xzf ngrok.tgz
-    sudo mv ngrok /usr/local/bin/
-    rm ngrok.tgz
+    print_status "Downloading Dev Tunnels CLI for $ARCH..."
+    wget -O devtunnel "$DEVTUNNEL_URL"
+    chmod +x devtunnel
+    sudo mv devtunnel /usr/local/bin/
     
-    # Configure ngrok if auth token is provided
-    if [ -n "$NGROK_AUTH_TOKEN" ]; then
-        ngrok config add-authtoken "$NGROK_AUTH_TOKEN"
-        print_success "ngrok installed and configured with auth token"
+    print_success "Azure Dev Tunnels CLI installed"
+    
+    # Test installation
+    if /usr/local/bin/devtunnel --version > /dev/null 2>&1; then
+        print_success "Dev Tunnels CLI is working"
     else
-        print_success "ngrok installed (auth token not configured)"
+        print_error "Dev Tunnels CLI installation failed"
+        exit 1
+    fi
+}
+
+setup_azure_login() {
+    print_status "Setting up Azure Dev Tunnels authentication..."
+    
+    echo
+    echo "You need to authenticate with Microsoft/Azure to use Dev Tunnels."
+    echo "This will open a browser window or provide a device code for authentication."
+    echo
+    read -p "Proceed with Azure login? (y/N): " -n 1 -r
+    echo
+    
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        print_status "Starting Azure authentication..."
+        echo "If you're using SSH, you'll get a device code to enter at https://microsoft.com/devicelogin"
+        
+        if /usr/local/bin/devtunnel user login; then
+            print_success "Azure authentication successful"
+        else
+            print_error "Azure authentication failed"
+            print_status "You can authenticate later using: devtunnel user login"
+        fi
+    else
+        print_warning "Skipping Azure login. You'll need to authenticate later."
+        print_status "Run this command later: devtunnel user login"
     fi
 }
 
@@ -161,6 +192,13 @@ clone_or_download_code() {
     if [ -n "$REPO_URL" ]; then
         print_status "Cloning from repository: $REPO_URL"
         git clone "$REPO_URL" .
+        
+        # Rename ultrasonic_server.py to server.py if it exists
+        if [ -f "ultrasonic_server.py" ]; then
+            mv ultrasonic_server.py server.py
+            print_status "Renamed ultrasonic_server.py to server.py"
+        fi
+        
         print_success "Repository cloned successfully"
     else
         print_status "No repository URL provided. You'll need to upload your code manually."
@@ -177,9 +215,9 @@ spidev==3.6
 EOF
         
         cat > README.md << EOF
-# Multi-Sensor FastAPI Server with ngrok
+# Multi-Sensor FastAPI Server with Azure Dev Tunnels
 
-Upload your ultrasonic_server.py and requirements.txt files to this directory.
+Upload your server.py and requirements.txt files to this directory.
 
 ## Supported Sensors
 - HC-SR04 Ultrasonic Distance Sensor
@@ -187,11 +225,11 @@ Upload your ultrasonic_server.py and requirements.txt files to this directory.
 - DHT11 Temperature/Humidity Sensor
 
 ## Quick Start
-1. Upload ultrasonic_server.py to $PROJECT_DIR
+1. Upload server.py to $PROJECT_DIR
 2. Upload requirements.txt to $PROJECT_DIR
 3. Run: sudo systemctl start $SERVICE_NAME
-4. Run: sudo systemctl start $NGROK_SERVICE_NAME
-5. Check ngrok URL: $PROJECT_DIR/get_ngrok_url.sh
+4. Run: sudo systemctl start $TUNNEL_SERVICE_NAME
+5. Check tunnel URL: $PROJECT_DIR/get_tunnel_url.sh
 
 ## Local Access
 http://$(hostname -I | awk '{print $1}'):8000
@@ -201,15 +239,15 @@ http://$(hostname -I | awk '{print $1}'):8000
 - ReDoc: http://$(hostname -I | awk '{print $1}'):8000/redoc
 
 ## External Access
-Check ngrok URL with: $PROJECT_DIR/get_ngrok_url.sh
+Check Azure Dev Tunnel URL with: $PROJECT_DIR/get_tunnel_url.sh
 
 ## Manual Start
 \`\`\`bash
 cd $PROJECT_DIR
 source venv/bin/activate
-python3 ultrasonic_server.py
+python3 server.py
 # In another terminal:
-ngrok http 8000
+devtunnel host -p 8000 --allow-anonymous
 \`\`\`
 
 ## Pin Connections
@@ -233,7 +271,7 @@ ngrok http 8000
 - Pull-up resistor (10kΩ) between VCC and Data
 EOF
         
-        print_warning "Please upload your ultrasonic_server.py and requirements.txt files to: $PROJECT_DIR"
+        print_warning "Please upload your server.py and requirements.txt files to: $PROJECT_DIR"
     fi
 }
 
@@ -256,6 +294,18 @@ setup_virtual_environment() {
     print_success "Virtual environment created and packages installed"
 }
 
+create_tunnel() {
+    print_status "Creating Azure Dev Tunnel..."
+    
+    # Create a persistent tunnel
+    if /usr/local/bin/devtunnel create --allow-anonymous --name "$TUNNEL_NAME" > /dev/null 2>&1; then
+        print_success "Azure Dev Tunnel '$TUNNEL_NAME' created successfully"
+    else
+        print_warning "Tunnel creation failed or tunnel already exists"
+        print_status "This is normal if the tunnel was already created"
+    fi
+}
+
 create_systemd_service() {
     print_status "Creating systemd service..."
     
@@ -272,7 +322,7 @@ User=root
 Group=root
 WorkingDirectory=$PROJECT_DIR
 Environment=PATH=$PROJECT_DIR/venv/bin
-ExecStart=$PROJECT_DIR/venv/bin/python $PROJECT_DIR/ultrasonic_server.py
+ExecStart=$PROJECT_DIR/venv/bin/python $PROJECT_DIR/server.py
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -282,10 +332,10 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
     
-    # ngrok service (updated for port 8000)
-    sudo tee /etc/systemd/system/${NGROK_SERVICE_NAME}.service > /dev/null << EOF
+    # Azure Dev Tunnels service
+    sudo tee /etc/systemd/system/${TUNNEL_SERVICE_NAME}.service > /dev/null << EOF
 [Unit]
-Description=ngrok tunnel for Multi-Sensor API
+Description=Azure Dev Tunnel for Multi-Sensor API
 After=network.target ${SERVICE_NAME}.service
 Wants=network.target
 Requires=${SERVICE_NAME}.service
@@ -295,7 +345,7 @@ Type=simple
 User=$USER
 Group=$USER
 WorkingDirectory=$PROJECT_DIR
-ExecStart=/usr/local/bin/ngrok http 8000 --log stdout
+ExecStart=/usr/local/bin/devtunnel host $TUNNEL_NAME -p 8000 --allow-anonymous
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -308,7 +358,7 @@ EOF
     # Reload systemd
     sudo systemctl daemon-reload
     sudo systemctl enable ${SERVICE_NAME}.service
-    sudo systemctl enable ${NGROK_SERVICE_NAME}.service
+    sudo systemctl enable ${TUNNEL_SERVICE_NAME}.service
     
     print_success "Systemd services created and enabled"
 }
@@ -321,69 +371,64 @@ create_management_scripts() {
 #!/bin/bash
 cd $PROJECT_DIR
 source venv/bin/activate
-python3 ultrasonic_server.py
+python3 server.py
 EOF
     chmod +x "$PROJECT_DIR/start.sh"
     
-    # Create ngrok URL checker script
-    cat > "$PROJECT_DIR/get_ngrok_url.sh" << EOF
+    # Create tunnel URL checker script
+    cat > "$PROJECT_DIR/get_tunnel_url.sh" << EOF
 #!/bin/bash
 
-echo "🌐 Checking ngrok tunnel status..."
+echo "🌐 Checking Azure Dev Tunnel status..."
 echo
 
-# Check if ngrok service is running
-if ! sudo systemctl is-active --quiet $NGROK_SERVICE_NAME; then
-    echo "❌ ngrok service is not running"
-    echo "Start it with: sudo systemctl start $NGROK_SERVICE_NAME"
+# Check if tunnel service is running
+if ! sudo systemctl is-active --quiet $TUNNEL_SERVICE_NAME; then
+    echo "❌ Azure Dev Tunnel service is not running"
+    echo "Start it with: sudo systemctl start $TUNNEL_SERVICE_NAME"
     exit 1
 fi
 
-# Wait a moment for ngrok to establish tunnel
+# Wait a moment for tunnel to establish
 sleep 2
 
-# Get ngrok URL from API
-NGROK_URL=\$(curl -s http://localhost:4040/api/tunnels | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    tunnels = data.get('tunnels', [])
-    for tunnel in tunnels:
-        if tunnel.get('proto') == 'https':
-            print(tunnel['public_url'])
-            break
-    else:
-        print('No HTTPS tunnel found')
-except:
-    print('Error getting tunnel info')
-" 2>/dev/null)
+# Get tunnel information
+TUNNEL_INFO=\$(/usr/local/bin/devtunnel show $TUNNEL_NAME --output json 2>/dev/null)
 
-if [ -n "\$NGROK_URL" ] && [ "\$NGROK_URL" != "No HTTPS tunnel found" ] && [ "\$NGROK_URL" != "Error getting tunnel info" ]; then
-    echo "✅ ngrok tunnel is active!"
-    echo "🌐 External URL: \$NGROK_URL"
-    echo
-    echo "📡 Test your Multi-Sensor API:"
-    echo "   \$NGROK_URL/ (Homepage with documentation)"
-    echo "   \$NGROK_URL/docs (Swagger UI)"
-    echo "   \$NGROK_URL/sensors (All sensor readings)"
-    echo "   \$NGROK_URL/sensors/ultrasonic (Distance sensor)"
-    echo "   \$NGROK_URL/sensors/mq135 (Air quality sensor)"
-    echo "   \$NGROK_URL/sensors/dht11 (Temperature/Humidity)"
-    echo "   \$NGROK_URL/sensors/alerts (Sensor alerts)"
-    echo "   \$NGROK_URL/health (Health check)"
-    echo
-    echo "📋 Use this URL to connect from any device on any network!"
+if [ \$? -eq 0 ] && [ -n "\$TUNNEL_INFO" ]; then
+    # Extract the HTTPS URL
+    TUNNEL_URL=\$(echo "\$TUNNEL_INFO" | jq -r '.endpoints[] | select(.hostHeader != null) | "https://" + .hostHeader' 2>/dev/null | head -1)
+    
+    if [ -n "\$TUNNEL_URL" ] && [ "\$TUNNEL_URL" != "null" ]; then
+        echo "✅ Azure Dev Tunnel is active!"
+        echo "🌐 External URL: \$TUNNEL_URL"
+        echo
+        echo "📡 Test your Multi-Sensor API:"
+        echo "   \$TUNNEL_URL/ (Homepage with documentation)"
+        echo "   \$TUNNEL_URL/docs (Swagger UI)"
+        echo "   \$TUNNEL_URL/sensors (All sensor readings)"
+        echo "   \$TUNNEL_URL/sensors/ultrasonic (Distance sensor)"
+        echo "   \$TUNNEL_URL/sensors/mq135 (Air quality sensor)"
+        echo "   \$TUNNEL_URL/sensors/dht11 (Temperature/Humidity)"
+        echo "   \$TUNNEL_URL/sensors/alerts (Sensor alerts)"
+        echo "   \$TUNNEL_URL/health (Health check)"
+        echo
+        echo "📋 Use this URL to connect from any device on any network!"
+    else
+        echo "❌ Could not extract tunnel URL"
+        echo "Check tunnel logs: sudo journalctl -u $TUNNEL_SERVICE_NAME -f"
+    fi
 else
-    echo "❌ Could not get ngrok URL"
-    echo "Check ngrok logs: sudo journalctl -u $NGROK_SERVICE_NAME -f"
-    echo
+    echo "❌ Could not get tunnel information"
     echo "Possible issues:"
-    echo "- ngrok auth token not configured"
-    echo "- ngrok service not running properly"
+    echo "- Not logged in to Azure (run: devtunnel user login)"
+    echo "- Tunnel not created (run: devtunnel create --allow-anonymous --name $TUNNEL_NAME)"
     echo "- Network connectivity issues"
+    echo
+    echo "Check tunnel logs: sudo journalctl -u $TUNNEL_SERVICE_NAME -f"
 fi
 EOF
-    chmod +x "$PROJECT_DIR/get_ngrok_url.sh"
+    chmod +x "$PROJECT_DIR/get_tunnel_url.sh"
     
     # Create service management script
     cat > "$PROJECT_DIR/manage.sh" << EOF
@@ -392,70 +437,92 @@ EOF
 case "\$1" in
     start)
         sudo systemctl start $SERVICE_NAME
-        sudo systemctl start $NGROK_SERVICE_NAME
+        sudo systemctl start $TUNNEL_SERVICE_NAME
         echo "Services started"
         sleep 3
-        echo "Getting ngrok URL..."
-        $PROJECT_DIR/get_ngrok_url.sh
+        echo "Getting tunnel URL..."
+        $PROJECT_DIR/get_tunnel_url.sh
         ;;
     stop)
         sudo systemctl stop $SERVICE_NAME
-        sudo systemctl stop $NGROK_SERVICE_NAME
+        sudo systemctl stop $TUNNEL_SERVICE_NAME
         echo "Services stopped"
         ;;
     restart)
         sudo systemctl restart $SERVICE_NAME
-        sudo systemctl restart $NGROK_SERVICE_NAME
+        sudo systemctl restart $TUNNEL_SERVICE_NAME
         echo "Services restarted"
         sleep 3
-        echo "Getting ngrok URL..."
-        $PROJECT_DIR/get_ngrok_url.sh
+        echo "Getting tunnel URL..."
+        $PROJECT_DIR/get_tunnel_url.sh
         ;;
     status)
         echo "=== Multi-Sensor API Service Status ==="
         sudo systemctl status $SERVICE_NAME --no-pager
         echo
-        echo "=== ngrok Service Status ==="
-        sudo systemctl status $NGROK_SERVICE_NAME --no-pager
+        echo "=== Azure Dev Tunnel Service Status ==="
+        sudo systemctl status $TUNNEL_SERVICE_NAME --no-pager
         ;;
     logs)
         echo "Choose logs to view:"
         echo "1) API logs"
-        echo "2) ngrok logs"
+        echo "2) Tunnel logs"
         echo "3) Both"
         read -p "Enter choice (1-3): " choice
         case \$choice in
             1) sudo journalctl -u $SERVICE_NAME -f ;;
-            2) sudo journalctl -u $NGROK_SERVICE_NAME -f ;;
-            3) sudo journalctl -u $SERVICE_NAME -u $NGROK_SERVICE_NAME -f ;;
+            2) sudo journalctl -u $TUNNEL_SERVICE_NAME -f ;;
+            3) sudo journalctl -u $SERVICE_NAME -u $TUNNEL_SERVICE_NAME -f ;;
             *) echo "Invalid choice" ;;
         esac
         ;;
     url)
-        $PROJECT_DIR/get_ngrok_url.sh
+        $PROJECT_DIR/get_tunnel_url.sh
         ;;
     enable)
         sudo systemctl enable $SERVICE_NAME
-        sudo systemctl enable $NGROK_SERVICE_NAME
+        sudo systemctl enable $TUNNEL_SERVICE_NAME
         echo "Services enabled for auto-start"
         ;;
     disable)
         sudo systemctl disable $SERVICE_NAME
-        sudo systemctl disable $NGROK_SERVICE_NAME
+        sudo systemctl disable $TUNNEL_SERVICE_NAME
         echo "Services disabled"
         ;;
+    login)
+        devtunnel user login
+        ;;
+    tunnel-create)
+        devtunnel create --allow-anonymous --name $TUNNEL_NAME
+        echo "Tunnel '$TUNNEL_NAME' created"
+        ;;
+    tunnel-list)
+        devtunnel list
+        ;;
+    tunnel-delete)
+        read -p "Are you sure you want to delete tunnel '$TUNNEL_NAME'? (y/N): " -n 1 -r
+        echo
+        if [[ \$REPLY =~ ^[Yy]$ ]]; then
+            devtunnel delete $TUNNEL_NAME
+            echo "Tunnel deleted"
+        fi
+        ;;
     *)
-        echo "Usage: \$0 {start|stop|restart|status|logs|url|enable|disable}"
+        echo "Usage: \$0 {start|stop|restart|status|logs|url|enable|disable|login|tunnel-create|tunnel-list|tunnel-delete}"
         echo
         echo "Commands:"
-        echo "  start    - Start both API and ngrok services"
-        echo "  stop     - Stop both services"
-        echo "  restart  - Restart both services"
-        echo "  status   - Show status of both services"
-        echo "  logs     - View service logs"
-        echo "  url      - Get current ngrok URL"
-        echo "  enable   - Enable auto-start on boot"
-        echo "  disable  - Disable auto-start on boot"
+        echo "  start         - Start both API and tunnel services"
+        echo "  stop          - Stop both services"
+        echo "  restart       - Restart both services"
+        echo "  status        - Show status of both services"
+        echo "  logs          - View service logs"
+        echo "  url           - Get current tunnel URL"
+        echo "  enable        - Enable auto-start on boot"
+        echo "  disable       - Disable auto-start on boot"
+        echo "  login         - Login to Azure Dev Tunnels"
+        echo "  tunnel-create - Create a new tunnel"
+        echo "  tunnel-list   - List all tunnels"
+        echo "  tunnel-delete - Delete the current tunnel"
         exit 1
         ;;
 esac
@@ -505,11 +572,12 @@ test_installation() {
     # Try to import spidev
     python3 -c "import spidev; print('spidev imported successfully')" 2>/dev/null || print_warning "spidev import failed"
     
-    # Test ngrok
-    if command -v ngrok &> /dev/null; then
-        print_success "ngrok installed successfully"
+    # Test Azure Dev Tunnels CLI
+    if command -v devtunnel &> /dev/null; then
+        print_success "Azure Dev Tunnels CLI installed successfully"
+        /usr/local/bin/devtunnel --version
     else
-        print_error "ngrok installation failed"
+        print_error "Azure Dev Tunnels CLI installation failed"
     fi
     
     print_success "Installation test completed"
@@ -524,19 +592,17 @@ display_usage_info() {
     echo "📁 Project directory: $PROJECT_DIR"
     echo "🏠 Local API URL: http://$IP:8000"
     echo "📚 API Documentation: http://$IP:8000/docs (Swagger UI)"
-    echo "🌐 External access: via ngrok (see commands below)"
+    echo "🌐 External access: via Azure Dev Tunnels (see commands below)"
     echo
     echo "📋 Next steps:"
     echo "  1. If you haven't already, upload your files to:"
-    echo "     ultrasonic_server.py → $PROJECT_DIR"
+    echo "     server.py → $PROJECT_DIR"
     echo "     requirements.txt → $PROJECT_DIR"
     echo
-    if [ -z "$NGROK_AUTH_TOKEN" ]; then
-        echo "  2. Configure ngrok auth token:"
-        echo "     ngrok config add-authtoken YOUR_TOKEN"
-        echo "     (Get your token from https://dashboard.ngrok.com/get-started/your-authtoken)"
-        echo
-    fi
+    echo "  2. If not logged in to Azure, authenticate:"
+    echo "     $PROJECT_DIR/manage.sh login"
+    echo "     (You'll need a Microsoft account - free at https://signup.live.com)"
+    echo
     echo "  3. Wire your sensors:"
     echo
     echo "     🌊 HC-SR04 Ultrasonic Sensor:"
@@ -560,19 +626,20 @@ display_usage_info() {
     echo "  Start both services:  $PROJECT_DIR/manage.sh start"
     echo "  Stop both services:   $PROJECT_DIR/manage.sh stop"
     echo "  Check status:         $PROJECT_DIR/manage.sh status"
-    echo "  Get ngrok URL:        $PROJECT_DIR/manage.sh url"
+    echo "  Get tunnel URL:       $PROJECT_DIR/manage.sh url"
     echo "  View logs:            $PROJECT_DIR/manage.sh logs"
+    echo "  Azure login:          $PROJECT_DIR/manage.sh login"
     echo "  Manual start:         $PROJECT_DIR/start.sh"
     echo
     echo "🔧 Individual service commands:"
     echo "  sudo systemctl start $SERVICE_NAME"
-    echo "  sudo systemctl start $NGROK_SERVICE_NAME"
+    echo "  sudo systemctl start $TUNNEL_SERVICE_NAME"
     echo "  sudo systemctl stop $SERVICE_NAME"
-    echo "  sudo systemctl stop $NGROK_SERVICE_NAME"
+    echo "  sudo systemctl stop $TUNNEL_SERVICE_NAME"
     echo
     echo "📡 Test API endpoints:"
     echo "  Local:  curl http://localhost:8000/sensors"
-    echo "  Remote: Use the ngrok URL from 'manage.sh url'"
+    echo "  Remote: Use the tunnel URL from 'manage.sh url'"
     echo
     echo "🌐 API Endpoints:"
     echo "  /                    - Homepage with documentation"
@@ -589,19 +656,24 @@ display_usage_info() {
     echo "  After starting services, run: $PROJECT_DIR/manage.sh url"
     echo "  This URL will work from anywhere in the world!"
     echo
+    echo "🔑 Azure Dev Tunnels Commands:"
+    echo "  devtunnel user login                    - Authenticate with Microsoft"
+    echo "  devtunnel list                         - List all your tunnels"
+    echo "  devtunnel create --allow-anonymous     - Create a new tunnel"
+    echo "  devtunnel host -p 8000 --allow-anonymous - Host on port 8000"
+    echo "  devtunnel delete TUNNEL_NAME           - Delete a tunnel"
+    echo
     if [ -z "$REPO_URL" ]; then
-        print_warning "Remember to upload your ultrasonic_server.py and requirements.txt files before starting the service!"
+        print_warning "Remember to upload your server.py and requirements.txt files before starting the service!"
     fi
     
-    if [ -z "$NGROK_AUTH_TOKEN" ]; then
-        print_warning "Remember to configure your ngrok auth token for external access!"
-    fi
+    print_warning "Remember to login to Azure Dev Tunnels: $PROJECT_DIR/manage.sh login"
 }
 
 # Main execution
 main() {
-    echo "🚀 Multi-Sensor FastAPI Server Setup with ngrok"
-    echo "==============================================="
+    echo "🚀 Multi-Sensor FastAPI Server Setup with Azure Dev Tunnels"
+    echo "==========================================================="
     
     # Parse arguments
     if [ $# -gt 0 ]; then
@@ -612,15 +684,17 @@ main() {
     # Pre-flight checks
     check_root
     check_raspberry_pi
-    get_ngrok_auth_token
+    get_azure_account_info
     
     # Setup steps
     update_system
     install_dependencies
-    install_ngrok
+    install_azure_dev_tunnels
+    setup_azure_login
     setup_project_directory
     clone_or_download_code
     setup_virtual_environment
+    create_tunnel
     create_systemd_service
     create_management_scripts
     setup_gpio_permissions
@@ -632,18 +706,18 @@ main() {
     echo
     print_success "Setup script completed! 🎉"
     
-    if [ -n "$REPO_URL" ] && [ -f "$PROJECT_DIR/ultrasonic_server.py" ]; then
+    if [ -n "$REPO_URL" ] && [ -f "$PROJECT_DIR/server.py" ]; then
         echo
         read -p "Would you like to start both services now? (y/N): " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             sudo systemctl start $SERVICE_NAME
             sleep 2
-            sudo systemctl start $NGROK_SERVICE_NAME
+            sudo systemctl start $TUNNEL_SERVICE_NAME
             sleep 3
             echo
             print_status "Services started! Getting your external URL..."
-            "$PROJECT_DIR/get_ngrok_url.sh"
+            "$PROJECT_DIR/get_tunnel_url.sh"
         fi
     fi
 }
