@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Multi-Sensor API Server for Raspberry Pi
-Supports Ultrasonic (HC-SR04), MQ-135 Air Quality, and DHT11 Temperature/Humidity sensors
+Supports Ultrasonic (HC-SR04), MQ-135 Air Quality, DHT11 Temperature/Humidity,
+LDR Light Sensor, and PIR Motion Sensor
 Exposes sensor data via FastAPI REST API
 """
 
@@ -9,11 +10,10 @@ import time
 import json
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from threading import Thread, Lock
-import asyncio
 import logging
 
 # Uncomment these imports when running on Raspberry Pi
@@ -86,55 +86,13 @@ class UltrasonicSensor(BaseSensor):
         self.distance = 0.0
         self.min_distance_threshold = 10.0  # cm
         self.max_distance_threshold = 200.0  # cm
-        self.setup_gpio()
-        
-    def setup_gpio(self):
-        """Initialize GPIO pins"""
-        try:
-            # Uncomment when running on Raspberry Pi
-            # GPIO.setmode(GPIO.BCM)
-            # GPIO.setup(self.trigger_pin, GPIO.OUT)
-            # GPIO.setup(self.echo_pin, GPIO.IN)
-            # GPIO.output(self.trigger_pin, False)
-            logger.info(f"GPIO initialized - Trigger: {self.trigger_pin}, Echo: {self.echo_pin}")
-        except Exception as e:
-            logger.error(f"GPIO setup error: {e}")
         
     def measure_distance(self) -> Optional[float]:
         """Measure distance using ultrasonic sensor (HC-SR04)"""
         try:
-            # Simulate reading for demo (remove when using real sensor)
+            # Simulate reading for demo
             import random
-            distance = random.uniform(5, 250)
-            
-            # Uncomment for real sensor implementation
-            """
-            GPIO.output(self.trigger_pin, True)
-            time.sleep(0.00001)
-            GPIO.output(self.trigger_pin, False)
-            
-            pulse_start = time.time()
-            timeout = pulse_start + 0.1
-            
-            while GPIO.input(self.echo_pin) == 0:
-                pulse_start = time.time()
-                if pulse_start > timeout:
-                    return None
-                    
-            pulse_end = time.time()
-            timeout = pulse_end + 0.1
-            
-            while GPIO.input(self.echo_pin) == 1:
-                pulse_end = time.time()
-                if pulse_end > timeout:
-                    return None
-                    
-            pulse_duration = pulse_end - pulse_start
-            distance = (pulse_duration * 34300) / 2
-            """
-            
-            return round(distance, 2)
-            
+            return round(random.uniform(5, 250), 2)
         except Exception as e:
             logger.error(f"Error measuring distance: {e}")
             return None
@@ -147,7 +105,6 @@ class UltrasonicSensor(BaseSensor):
                 self.distance = distance
                 self.last_reading_time = datetime.now(timezone.utc)
                 
-                # Check for alerts
                 if distance < self.min_distance_threshold:
                     alert = self.generate_alert(
                         "Proximity Alert",
@@ -188,28 +145,9 @@ class MQ135Sensor(BaseSensor):
     def read_air_quality(self) -> Optional[float]:
         """Read air quality from MQ-135 sensor"""
         try:
-            # Simulate reading for demo (remove when using real sensor)
+            # Simulate reading for demo
             import random
-            ppm = random.uniform(50, 1200)
-            
-            # Uncomment for real sensor implementation with MCP3008 ADC
-            """
-            import spidev
-            spi = spidev.SpiDev()
-            spi.open(0, 0)
-            spi.max_speed_hz = 1000000
-            
-            adc_value = spi.xfer2([1, (8 + self.analog_pin) << 4, 0])
-            data = ((adc_value[1] & 3) << 8) + adc_value[2]
-            voltage = (data * 3.3) / 1024
-            
-            # Convert voltage to PPM (calibration required)
-            ppm = voltage * 100  # Simplified conversion
-            spi.close()
-            """
-            
-            return round(ppm, 2)
-            
+            return round(random.uniform(50, 1200), 2)
         except Exception as e:
             logger.error(f"Error reading air quality: {e}")
             return None
@@ -222,7 +160,6 @@ class MQ135Sensor(BaseSensor):
                 self.air_quality_ppm = ppm
                 self.last_reading_time = datetime.now(timezone.utc)
                 
-                # Check for alerts
                 if ppm > self.danger_threshold:
                     alert = self.generate_alert(
                         "Air Quality Critical",
@@ -272,18 +209,11 @@ class DHT11Sensor(BaseSensor):
     def read_temp_humidity(self) -> tuple:
         """Read temperature and humidity from DHT11"""
         try:
-            # Simulate reading for demo (remove when using real sensor)
+            # Simulate reading for demo
             import random
             humidity = random.uniform(30, 90)
             temperature = random.uniform(15, 40)
-            
-            # Uncomment for real sensor implementation
-            """
-            humidity, temperature = Adafruit_DHT.read_retry(Adafruit_DHT.DHT11, self.data_pin)
-            """
-            
             return humidity, temperature
-            
         except Exception as e:
             logger.error(f"Error reading DHT11: {e}")
             return None, None
@@ -297,7 +227,6 @@ class DHT11Sensor(BaseSensor):
                 self.temperature = round(temperature, 2)
                 self.last_reading_time = datetime.now(timezone.utc)
                 
-                # Check for temperature alerts
                 if temperature > self.temp_high_threshold:
                     alert = self.generate_alert(
                         "Temperature Alert",
@@ -313,7 +242,6 @@ class DHT11Sensor(BaseSensor):
                     )
                     self.alerts.append(alert)
                     
-                # Check for humidity alerts
                 if humidity > self.humidity_high_threshold:
                     alert = self.generate_alert(
                         "Humidity Alert",
@@ -343,104 +271,167 @@ class DHT11Sensor(BaseSensor):
                 'pins': {'data': self.data_pin}
             }
 
+class LDRSensor(BaseSensor):
+    def __init__(self, sensor_id: str = "LDR-01", asset_id: str = "LIGHT-SENSOR-01", 
+                 analog_pin: int = 1):  # MCP3008 channel 1
+        super().__init__(sensor_id, asset_id)
+        self.analog_pin = analog_pin
+        self.light_level = 0
+        self.light_percentage = 0.0
+        self.dark_threshold = 20.0  # Below 20% is considered dark
+        self.bright_threshold = 80.0  # Above 80% is considered very bright
+        
+    def read_light_level(self) -> Optional[tuple]:
+        """Read light level from LDR sensor via MCP3008"""
+        try:
+            # Simulate reading for demo
+            import random
+            raw_value = random.randint(0, 1023)
+            percentage = (raw_value / 1023) * 100
+            return raw_value, round(percentage, 2)
+        except Exception as e:
+            logger.error(f"Error reading LDR: {e}")
+            return None, None
+            
+    def update_reading(self):
+        """Update light level reading and check for alerts"""
+        raw_value, percentage = self.read_light_level()
+        if raw_value is not None and percentage is not None:
+            with self.lock:
+                self.light_level = raw_value
+                self.light_percentage = percentage
+                self.last_reading_time = datetime.now(timezone.utc)
+                
+                if percentage < self.dark_threshold:
+                    alert = self.generate_alert(
+                        "Light Level Alert",
+                        f"Dark environment detected: {percentage}% light level",
+                        "Light_Dark"
+                    )
+                    self.alerts.append(alert)
+                elif percentage > self.bright_threshold:
+                    alert = self.generate_alert(
+                        "Light Level Alert",
+                        f"Very bright environment detected: {percentage}% light level",
+                        "Light_Bright"
+                    )
+                    self.alerts.append(alert)
+                    
+    def get_reading(self) -> Dict:
+        """Get current light level reading"""
+        with self.lock:
+            light_condition = "Normal"
+            if self.light_percentage < self.dark_threshold:
+                light_condition = "Dark"
+            elif self.light_percentage > self.bright_threshold:
+                light_condition = "Very Bright"
+                
+            return {
+                'sensor_type': 'light_sensor',
+                'sensor_id': self.sensor_id,
+                'light_level_raw': self.light_level,
+                'light_percentage': self.light_percentage,
+                'light_condition': light_condition,
+                'timestamp': self.last_reading_time.isoformat() if self.last_reading_time else None,
+                'status': 'active' if self.last_reading_time else 'no_reading',
+                'pins': {'analog': self.analog_pin}
+            }
+
+class PIRSensor(BaseSensor):
+    def __init__(self, sensor_id: str = "PIR-01", asset_id: str = "MOTION-SENSOR-01", 
+                 data_pin: int = 23):
+        super().__init__(sensor_id, asset_id)
+        self.data_pin = data_pin
+        self.motion_detected = False
+        self.motion_count = 0
+        self.last_motion_time = None
+        self.motion_timeout = 30  # seconds - alert if no motion for this long
+        
+    def read_motion(self) -> bool:
+        """Read motion detection from PIR sensor"""
+        try:
+            # Simulate reading for demo
+            import random
+            return random.choice([True, False, False, False])  # 25% chance of motion
+        except Exception as e:
+            logger.error(f"Error reading PIR: {e}")
+            return False
+            
+    def update_reading(self):
+        """Update motion detection and check for alerts"""
+        motion = self.read_motion()
+        current_time = datetime.now(timezone.utc)
+        
+        with self.lock:
+            self.last_reading_time = current_time
+            
+            if motion:
+                if not self.motion_detected:  # Motion just started
+                    self.motion_count += 1
+                    alert = self.generate_alert(
+                        "Motion Detected",
+                        f"Motion detected by sensor. Total detections: {self.motion_count}",
+                        "Motion_Detected"
+                    )
+                    self.alerts.append(alert)
+                
+                self.motion_detected = True
+                self.last_motion_time = current_time
+            else:
+                self.motion_detected = False
+                
+                # Check for no motion timeout
+                if (self.last_motion_time and 
+                    (current_time - self.last_motion_time).total_seconds() > self.motion_timeout):
+                    alert = self.generate_alert(
+                        "No Motion Alert",
+                        f"No motion detected for over {self.motion_timeout} seconds",
+                        "Motion_Timeout"
+                    )
+                    self.alerts.append(alert)
+                    
+    def get_reading(self) -> Dict:
+        """Get current motion detection status"""
+        with self.lock:
+            time_since_motion = None
+            if self.last_motion_time:
+                time_since_motion = (datetime.now(timezone.utc) - self.last_motion_time).total_seconds()
+                
+            return {
+                'sensor_type': 'motion_sensor',
+                'sensor_id': self.sensor_id,
+                'motion_detected': self.motion_detected,
+                'motion_count': self.motion_count,
+                'last_motion_time': self.last_motion_time.isoformat() if self.last_motion_time else None,
+                'time_since_motion_seconds': round(time_since_motion, 2) if time_since_motion else None,
+                'timestamp': self.last_reading_time.isoformat() if self.last_reading_time else None,
+                'status': 'active' if self.last_reading_time else 'no_reading',
+                'pins': {'data': self.data_pin}
+            }
+
 # Initialize sensors
 ultrasonic_sensor = UltrasonicSensor()
 mq135_sensor = MQ135Sensor()
 dht11_sensor = DHT11Sensor()
+ldr_sensor = LDRSensor()
+pir_sensor = PIRSensor()
 
 sensors = {
     'ultrasonic': ultrasonic_sensor,
     'mq135': mq135_sensor,
-    'dht11': dht11_sensor
+    'dht11': dht11_sensor,
+    'ldr': ldr_sensor,
+    'pir': pir_sensor
 }
 
 # FastAPI app
 app = FastAPI(
     title="Multi-Sensor IoT API",
-    description="REST API for Ultrasonic, MQ-135, and DHT11 sensors on Raspberry Pi",
+    description="REST API for Ultrasonic, MQ-135, DHT11, LDR, and PIR sensors on Raspberry Pi",
     version="2.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
-
-@app.get("/", response_class=HTMLResponse)
-async def home():
-    """API documentation homepage"""
-    html_content = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Multi-Sensor IoT API</title>
-        <style>
-            body { font-family: Arial, sans-serif; margin: 40px; }
-            .endpoint { background: #f5f5f5; padding: 10px; margin: 10px 0; border-radius: 5px; }
-            .method { color: #007acc; font-weight: bold; }
-        </style>
-    </head>
-    <body>
-        <h1>Multi-Sensor IoT API v2.0.0</h1>
-        <h2>Available Endpoints:</h2>
-        
-        <div class="endpoint">
-            <span class="method">GET</span> <strong>/docs</strong> - Interactive API Documentation (Swagger UI)
-        </div>
-        <div class="endpoint">
-            <span class="method">GET</span> <strong>/redoc</strong> - Alternative API Documentation (ReDoc)
-        </div>
-        <div class="endpoint">
-            <span class="method">GET</span> <strong>/sensors</strong> - Get all sensor readings
-        </div>
-        <div class="endpoint">
-            <span class="method">GET</span> <strong>/sensors/alerts</strong> - Get all sensor alerts in specified format
-        </div>
-        <div class="endpoint">
-            <span class="method">GET</span> <strong>/sensors/{sensor_type}</strong> - Get specific sensor reading
-        </div>
-        <div class="endpoint">
-            <span class="method">GET</span> <strong>/sensors/{sensor_type}/live</strong> - Get fresh sensor reading
-        </div>
-        <div class="endpoint">
-            <span class="method">GET</span> <strong>/health</strong> - Health check all sensors
-        </div>
-        <div class="endpoint">
-            <span class="method">GET</span> <strong>/config</strong> - Get sensor configurations
-        </div>
-        
-        <h2>Supported Sensors:</h2>
-        <ul>
-            <li><strong>ultrasonic</strong> - HC-SR04 Distance Sensor (Pins: Trigger=18, Echo=24)</li>
-            <li><strong>mq135</strong> - MQ-135 Air Quality Sensor (Pin: Analog=0 via MCP3008)</li>
-            <li><strong>dht11</strong> - DHT11 Temperature/Humidity Sensor (Pin: Data=22)</li>
-        </ul>
-        
-        <h2>Pin Connections:</h2>
-        <h3>HC-SR04 Ultrasonic Sensor:</h3>
-        <ul>
-            <li>VCC → 5V</li>
-            <li>GND → Ground</li>
-            <li>Trig → GPIO 18</li>
-            <li>Echo → GPIO 24</li>
-        </ul>
-        
-        <h3>MQ-135 Air Quality Sensor:</h3>
-        <ul>
-            <li>VCC → 5V</li>
-            <li>GND → Ground</li>
-            <li>A0 → MCP3008 CH0 → SPI (CE0)</li>
-            <li>D0 → Not used</li>
-        </ul>
-        
-        <h3>DHT11 Temperature/Humidity Sensor:</h3>
-        <ul>
-            <li>VCC → 3.3V</li>
-            <li>GND → Ground</li>
-            <li>Data → GPIO 22</li>
-            <li>Pull-up resistor (10kΩ) between VCC and Data</li>
-        </ul>
-    </body>
-    </html>
-    """
-    return html_content
 
 @app.get("/sensors", response_model=ApiResponse)
 async def get_all_sensors():
@@ -465,12 +456,10 @@ async def get_sensor_alerts():
     try:
         all_alerts = []
         
-        # Collect alerts from all sensors
         for sensor in sensors.values():
             with sensor.lock:
                 all_alerts.extend(sensor.alerts[-10:])  # Last 10 alerts per sensor
         
-        # Sort by date (newest first)
         all_alerts.sort(key=lambda x: x['Date'], reverse=True)
         
         return ApiResponse(
@@ -517,8 +506,7 @@ async def get_live_sensor(sensor_type: str):
         return ApiResponse(
             success=True,
             data=reading,
-            shouldSubscribe="true",
-            note="Fresh measurement taken"
+            shouldSubscribe="true"
         )
     except Exception as e:
         logger.error(f"Error getting live {sensor_type} sensor: {e}")
@@ -598,11 +586,10 @@ def continuous_reading():
 @app.on_event("startup")
 async def startup_event():
     """Start background tasks when the app starts"""
-    # Start background reading thread
     reading_thread = Thread(target=continuous_reading, daemon=True)
     reading_thread.start()
     logger.info("Background reading thread started")
-    logger.info("Multi-Sensor API Server started")
+    logger.info("Multi-Sensor API Server started with 5 sensors")
 
 @app.on_event("shutdown")
 async def shutdown_event():
