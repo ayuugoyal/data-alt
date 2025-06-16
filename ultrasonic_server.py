@@ -16,6 +16,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from threading import Thread, Lock
 import logging
+from fastapi.middleware.cors import CORSMiddleware
 
 # Uncomment these imports when running on Raspberry Pi
 import RPi.GPIO as GPIO
@@ -561,13 +562,22 @@ sensors = {
     'pir': pir_sensor
 }
 
-# FastAPI app
 app = FastAPI(
     title="Multi-Sensor IoT API - Direct GPIO",
     description="REST API for Ultrasonic, MQ-135, DHT11, LDR, and PIR sensors on Raspberry Pi with direct GPIO connections",
     version="2.1.0",
     docs_url="/docs",
     redoc_url="/redoc"
+)
+
+origins = ["*"]  # This allows all origins
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods (GET, POST, PUT, DELETE, etc.)
+    allow_headers=["*"],  # Allows all headers
 )
 
 @app.get("/sensors", response_model=ApiResponse)
