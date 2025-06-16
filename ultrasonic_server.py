@@ -11,7 +11,7 @@ import time
 import json
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from threading import Thread, Lock
@@ -580,20 +580,38 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
+# Middleware to add ngrok bypass headers
+@app.middleware("http")
+async def add_ngrok_bypass_headers(request: Request, call_next):
+    response = await call_next(request)
+    
+    # Add ngrok bypass headers to all responses
+    response.headers["ngrok-skip-browser-warning"] = "true"
+    response.headers["User-Agent"] = "CustomSensorAPI/1.0"
+    
+    return response
+
 @app.get("/sensors", response_class=PlainTextResponse)
-async def get_all_sensors():
+async def get_all_sensors(request: Request):
     try:
         readings = []
         for sensor_type, sensor in sensors.items():
             readings.append(sensor.get_reading())
         response = ApiResponse(data=readings, shouldSubscribe="true")
-        return json.dumps(response.dict(), indent=2)
+        
+        # Create response with ngrok bypass headers
+        content = json.dumps(response.dict(), indent=2)
+        headers = {
+            "ngrok-skip-browser-warning": "true",
+            "User-Agent": "CustomSensorAPI/1.0"
+        }
+        return PlainTextResponse(content=content, headers=headers)
     except Exception as e:
         logger.error(f"Error getting all sensors: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     
 @app.get("/sensors/alerts", response_class=PlainTextResponse)
-async def get_sensor_alerts():
+async def get_sensor_alerts(request: Request):
     try:
         all_alerts = []
         for sensor in sensors.values():
@@ -601,38 +619,59 @@ async def get_sensor_alerts():
                 all_alerts.extend(sensor.alerts[-10:])
         all_alerts.sort(key=lambda x: x['Date'], reverse=True)
         response = ApiResponse(data=all_alerts, shouldSubscribe="true")
-        return json.dumps(response.dict(), indent=2)
+        
+        # Create response with ngrok bypass headers
+        content = json.dumps(response.dict(), indent=2)
+        headers = {
+            "ngrok-skip-browser-warning": "true",
+            "User-Agent": "CustomSensorAPI/1.0"
+        }
+        return PlainTextResponse(content=content, headers=headers)
     except Exception as e:
         logger.error(f"Error getting sensor alerts: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     
 @app.get("/sensors/{sensor_type}", response_class=PlainTextResponse)
-async def get_sensor(sensor_type: str):
+async def get_sensor(sensor_type: str, request: Request):
     if sensor_type not in sensors:
         raise HTTPException(status_code=404, detail=f"Sensor type '{sensor_type}' not found. Available: {list(sensors.keys())}")
     try:
         reading = [sensors[sensor_type].get_reading()]
         response = ApiResponse(data=reading, shouldSubscribe="true")
-        return json.dumps(response.dict(), indent=2)
+        
+        # Create response with ngrok bypass headers
+        content = json.dumps(response.dict(), indent=2)
+        headers = {
+            "ngrok-skip-browser-warning": "true",
+            "User-Agent": "CustomSensorAPI/1.0"
+        }
+        return PlainTextResponse(content=content, headers=headers)
     except Exception as e:
         logger.error(f"Error getting {sensor_type} sensor: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/sensors/{sensor_type}/live", response_class=PlainTextResponse)
-async def get_live_sensor(sensor_type: str):
+async def get_live_sensor(sensor_type: str, request: Request):
     if sensor_type not in sensors:
         raise HTTPException(status_code=404, detail=f"Sensor type '{sensor_type}' not found. Available: {list(sensors.keys())}")
     try:
         sensors[sensor_type].update_reading()
         reading = [sensors[sensor_type].get_reading()]
         response = ApiResponse(data=reading, shouldSubscribe="true")
-        return json.dumps(response.dict(), indent=2)
+        
+        # Create response with ngrok bypass headers
+        content = json.dumps(response.dict(), indent=2)
+        headers = {
+            "ngrok-skip-browser-warning": "true",
+            "User-Agent": "CustomSensorAPI/1.0"
+        }
+        return PlainTextResponse(content=content, headers=headers)
     except Exception as e:
         logger.error(f"Error getting live {sensor_type} sensor: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health", response_class=PlainTextResponse)
-async def health_check():
+async def health_check(request: Request):
     try:
         health_status = {}
         overall_healthy = True
@@ -662,13 +701,20 @@ async def health_check():
             }],
             'shouldSubscribe': "true"
         }
-        return json.dumps(response, indent=2)
+        
+        # Create response with ngrok bypass headers
+        content = json.dumps(response, indent=2)
+        headers = {
+            "ngrok-skip-browser-warning": "true",
+            "User-Agent": "CustomSensorAPI/1.0"
+        }
+        return PlainTextResponse(content=content, headers=headers)
     except Exception as e:
         logger.error(f"Health check error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/config", response_class=PlainTextResponse)
-async def get_config():
+async def get_config(request: Request):
     config = []
     for sensor_type, sensor in sensors.items():
         reading = sensor.get_reading()
@@ -685,7 +731,14 @@ async def get_config():
         'update_interval': '1_second',
         'connection_type': 'direct_gpio'
     }
-    return json.dumps(response, indent=2)
+    
+    # Create response with ngrok bypass headers
+    content = json.dumps(response, indent=2)
+    headers = {
+        "ngrok-skip-browser-warning": "true",
+        "User-Agent": "CustomSensorAPI/1.0"
+    }
+    return PlainTextResponse(content=content, headers=headers)
 
 def continuous_reading():
     """Background task for continuous sensor readings"""
@@ -718,4 +771,4 @@ async def shutdown_event():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000) 
