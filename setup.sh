@@ -59,6 +59,58 @@ check_raspberry_pi() {
     fi
 }
 
+cleanup_existing_cloudflare() {
+    print_status "🧹 Cleaning up existing Cloudflare Tunnel setup..."
+    
+    # Stop and disable existing cloudflared services
+    sudo systemctl stop cloudflared 2>/dev/null || true
+    sudo systemctl disable cloudflared 2>/dev/null || true
+    sudo systemctl stop $CLOUDFLARED_SERVICE_NAME 2>/dev/null || true
+    sudo systemctl disable $CLOUDFLARED_SERVICE_NAME 2>/dev/null || true
+    
+    # Remove existing service files
+    sudo rm -f /etc/systemd/system/cloudflared.service
+    sudo rm -f /etc/systemd/system/$CLOUDFLARED_SERVICE_NAME.service
+    
+    # List and delete all existing tunnels
+    if command -v cloudflared &> /dev/null; then
+        print_status "Checking for existing tunnels..."
+        EXISTING_TUNNELS=$(cloudflared tunnel list 2>/dev/null | grep -E '^[a-f0-9-]{36}' | awk '{print $1}' || true)
+        
+        if [ -n "$EXISTING_TUNNELS" ]; then
+            echo "Found existing tunnels:"
+            cloudflared tunnel list 2>/dev/null || true
+            echo
+            read -p "Delete all existing tunnels? This will break any current tunnel connections. (y/N): " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                for tunnel_id in $EXISTING_TUNNELS; do
+                    print_status "Deleting tunnel: $tunnel_id"
+                    cloudflared tunnel delete $tunnel_id --force 2>/dev/null || true
+                done
+                print_success "All existing tunnels deleted"
+            else
+                print_warning "Keeping existing tunnels. This may cause conflicts."
+            fi
+        else
+            print_status "No existing tunnels found"
+        fi
+    fi
+    
+    # Clean up configuration files
+    rm -rf ~/.cloudflared/ 2>/dev/null || true
+    
+    # Remove cloudflared package
+    sudo apt remove --purge cloudflared -y 2>/dev/null || true
+    
+    # Remove cloudflare repository
+    sudo rm -f /etc/apt/sources.list.d/cloudflared.list
+    sudo rm -f /usr/share/keyrings/cloudflare-main.gpg
+    
+    sudo systemctl daemon-reload
+    print_success "Cloudflare cleanup completed"
+}
+
 get_cloudflare_config() {
     echo
     print_status "🌐 Setting up Cloudflare Tunnel for external access"
@@ -118,22 +170,50 @@ install_dependencies() {
         nano \
         wget \
         unzip \
-        lsb-release
+        lsb-release \
+        ca-certificates \
+        gnupg
     print_success "System packages installed"
 }
 
 install_cloudflared() {
     print_status "Installing Cloudflare Tunnel (cloudflared)..."
     
-    # Add Cloudflare GPG key and repository
-    curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
-    echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared $(lsb_release -cs) main' | sudo tee /etc/apt/sources.list.d/cloudflared.list
+    # Detect architecture
+    ARCH=$(dpkg --print-architecture)
+    print_status "Detected architecture: $ARCH"
     
-    # Update and install
-    sudo apt update
-    sudo apt install -y cloudflared
+    # Download and install cloudflared directly
+    case $ARCH in
+        amd64)
+            CLOUDFLARED_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
+            ;;
+        arm64)
+            CLOUDFLARED_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64"
+            ;;
+        armhf|arm)
+            CLOUDFLARED_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm"
+            ;;
+        *)
+            print_error "Unsupported architecture: $ARCH"
+            exit 1
+            ;;
+    esac
     
-    print_success "cloudflared installed successfully"
+    print_status "Downloading cloudflared from: $CLOUDFLARED_URL"
+    wget -O /tmp/cloudflared "$CLOUDFLARED_URL"
+    
+    # Make executable and install
+    chmod +x /tmp/cloudflared
+    sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
+    
+    # Verify installation
+    if cloudflared version; then
+        print_success "cloudflared installed successfully"
+    else
+        print_error "cloudflared installation failed"
+        exit 1
+    fi
 }
 
 setup_project_directory() {
@@ -265,18 +345,40 @@ setup_cloudflare_tunnel() {
     TUNNEL_NAME="multi-sensor-api-$(date +%s)"
     print_status "Creating tunnel: $TUNNEL_NAME"
     
-    # Authenticate cloudflared
-    echo "$CLOUDFLARE_TOKEN" | cloudflared tunnel login --token
+    # Authenticate cloudflared with token
+    export CLOUDFLARE_TUNNEL_TOKEN="$CLOUDFLARE_TOKEN"
     
     # Create tunnel
-    cloudflared tunnel create "$TUNNEL_NAME"
+    TUNNEL_CREATE_OUTPUT=$(cloudflared tunnel create "$TUNNEL_NAME" 2>&1)
+    if [ $? -eq 0 ]; then
+        print_success "Tunnel created successfully"
+        echo "$TUNNEL_CREATE_OUTPUT"
+    else
+        print_error "Failed to create tunnel. Output:"
+        echo "$TUNNEL_CREATE_OUTPUT"
+        
+        # Try alternative authentication method
+        print_status "Trying alternative authentication method..."
+        echo "$CLOUDFLARE_TOKEN" > /tmp/cf_token
+        cloudflared tunnel login --token-file /tmp/cf_token
+        rm -f /tmp/cf_token
+        
+        cloudflared tunnel create "$TUNNEL_NAME"
+    fi
     
     # Get tunnel UUID
     TUNNEL_UUID=$(cloudflared tunnel list | grep "$TUNNEL_NAME" | awk '{print $1}')
     
     if [ -z "$TUNNEL_UUID" ]; then
-        print_error "Failed to create tunnel"
-        exit 1
+        # Try to get tunnel ID from the create output
+        TUNNEL_UUID=$(echo "$TUNNEL_CREATE_OUTPUT" | grep -oE '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}' | head -1)
+        
+        if [ -z "$TUNNEL_UUID" ]; then
+            print_error "Failed to get tunnel UUID"
+            print_status "Available tunnels:"
+            cloudflared tunnel list
+            exit 1
+        fi
     fi
     
     print_success "Tunnel created with UUID: $TUNNEL_UUID"
@@ -295,7 +397,12 @@ EOF
     
     # Create DNS record
     print_status "Creating DNS record..."
-    cloudflared tunnel route dns "$TUNNEL_UUID" "${SUBDOMAIN}.${DOMAIN_NAME}"
+    if cloudflared tunnel route dns "$TUNNEL_UUID" "${SUBDOMAIN}.${DOMAIN_NAME}"; then
+        print_success "DNS record created successfully"
+    else
+        print_warning "DNS record creation may have failed. You may need to create it manually."
+        print_status "Manual DNS setup: Create a CNAME record for ${SUBDOMAIN} pointing to $TUNNEL_UUID.cfargotunnel.com"
+    fi
     
     print_success "Cloudflare Tunnel configured successfully"
     print_success "API will be accessible at: https://${SUBDOMAIN}.${DOMAIN_NAME}"
@@ -340,7 +447,7 @@ Type=simple
 User=$USER
 Group=$USER
 WorkingDirectory=$PROJECT_DIR
-ExecStart=/usr/bin/cloudflared tunnel run
+ExecStart=/usr/local/bin/cloudflared tunnel run
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -476,10 +583,25 @@ case "\$1" in
         cloudflared tunnel list
         echo
         echo "=== Tunnel Configuration ==="
-        cat ~/.cloudflared/config.yml
+        cat ~/.cloudflared/config.yml 2>/dev/null || echo "No config file found"
+        ;;
+    cleanup)
+        echo "🧹 Cleaning up tunnels and configuration..."
+        sudo systemctl stop $SERVICE_NAME $CLOUDFLARED_SERVICE_NAME
+        cloudflared tunnel list
+        echo
+        echo "This will delete ALL tunnels. Are you sure?"
+        read -p "Type 'yes' to confirm: " confirm
+        if [ "\$confirm" = "yes" ]; then
+            for tunnel in \$(cloudflared tunnel list | grep -E '^[a-f0-9-]{36}' | awk '{print \$1}'); do
+                cloudflared tunnel delete \$tunnel --force
+            done
+            rm -rf ~/.cloudflared/
+            echo "Cleanup completed"
+        fi
         ;;
     *)
-        echo "Usage: \$0 {start|stop|restart|status|logs|url|enable|disable|tunnel-info}"
+        echo "Usage: \$0 {start|stop|restart|status|logs|url|enable|disable|tunnel-info|cleanup}"
         echo
         echo "Commands:"
         echo "  start       - Start both API and Cloudflare Tunnel services"
@@ -491,6 +613,7 @@ case "\$1" in
         echo "  enable      - Enable auto-start on boot"
         echo "  disable     - Disable auto-start on boot"
         echo "  tunnel-info - Show tunnel configuration and details"
+        echo "  cleanup     - Clean up all tunnels and configuration"
         exit 1
         ;;
 esac
@@ -594,6 +717,7 @@ display_usage_info() {
     echo "  Check tunnel & URL:     $PROJECT_DIR/manage.sh url"
     echo "  View logs:              $PROJECT_DIR/manage.sh logs"
     echo "  Tunnel information:     $PROJECT_DIR/manage.sh tunnel-info"
+    echo "  Clean up tunnels:       $PROJECT_DIR/manage.sh cleanup"
     echo "  Manual start:           $PROJECT_DIR/start.sh"
     echo
     echo "🔧 Individual service commands:"
@@ -630,6 +754,7 @@ display_usage_info() {
     echo "  View API logs:       sudo journalctl -u $SERVICE_NAME -f"
     echo "  View tunnel logs:    sudo journalctl -u $CLOUDFLARED_SERVICE_NAME -f"
     echo "  List tunnels:        cloudflared tunnel list"
+    echo "  Clean up tunnels:    $PROJECT_DIR/manage.sh cleanup"
 }
 
 # Main execution
@@ -646,6 +771,7 @@ main() {
     # Pre-flight checks
     check_root
     check_raspberry_pi
+    cleanup_existing_cloudflare
     get_cloudflare_config
     
     # Setup steps
@@ -660,28 +786,22 @@ main() {
     create_management_scripts
     setup_gpio_permissions
     test_installation
-    
-    # Display final information
     display_usage_info
     
     echo
-    print_success "Setup script completed! 🎉"
-    
-    if [ -n "$REPO_URL" ] && [ -f "$PROJECT_DIR/server.py" ]; then
-        echo
-        read -p "Would you like to start both services now? (y/N): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            sudo systemctl start $SERVICE_NAME
-            sleep 3
-            sudo systemctl start $CLOUDFLARED_SERVICE_NAME
-            sleep 5
-            echo
-            print_status "Services started! Checking your tunnel status..."
-            "$PROJECT_DIR/check_tunnel.sh"
-        fi
-    fi
+    print_success "🎯 Setup completed! Your Multi-Sensor API is ready!"
+    print_status "Run: $PROJECT_DIR/manage.sh start"
+    print_status "Then check: $PROJECT_DIR/check_tunnel.sh"
+    echo
 }
 
-# Run main function
+# Trap to cleanup on script exit
+trap 'echo "Setup interrupted"; exit 1' INT TERM
+
+# Run main function with all arguments
 main "$@"
+
+# End of script marker
+print_success "✨ Multi-Sensor FastAPI Server setup script completed successfully!"
+print_status "External URL: https://${SUBDOMAIN}.${DOMAIN_NAME}"
+print_status "Management: $PROJECT_DIR/manage.sh"
