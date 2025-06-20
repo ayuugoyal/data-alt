@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Multi-Sensor FastAPI Server Setup Script with Azure Dev Tunnels
-# This script sets up the complete environment for the multi-sensor FastAPI server with external access via Azure Dev Tunnels
+# Multi-Sensor FastAPI Server Setup Script with Cloudflare Tunnel
+# This script sets up the complete environment for the multi-sensor FastAPI server with external access via Cloudflare Tunnel
 
 set -e  # Exit on any error
 
@@ -15,12 +15,11 @@ NC='\033[0m' # No Color
 # Configuration
 PROJECT_NAME="multi-sensor-api"
 PROJECT_DIR="$HOME/$PROJECT_NAME"
-REPO_URL=""  # Will be set if provided as argument
 SERVICE_NAME="multi-sensor-api"
-TUNNEL_SERVICE_NAME="multi-sensor-tunnel"
+TUNNEL_SERVICE_NAME="cloudflared-tunnel"
 USER=$(whoami)
-AZURE_USER_EMAIL=""  # Will be prompted for
 TUNNEL_NAME="multi-sensor-tunnel"
+CLOUDFLARE_CONFIG_DIR="$HOME/.cloudflared"
 
 # Functions
 print_status() {
@@ -58,29 +57,27 @@ check_raspberry_pi() {
     fi
 }
 
-get_azure_account_info() {
+get_cloudflare_info() {
     echo
-    print_status "🌐 Setting up Azure Dev Tunnels for external access"
+    print_status "🌐 Setting up Cloudflare Tunnel for external access"
     echo
-    echo "Azure Dev Tunnels provides secure access to local applications via Azure."
-    echo "You'll need a Microsoft account (personal) or Azure account to use this service."
+    echo "Cloudflare Tunnel provides secure access to local applications via Cloudflare's network."
+    echo "You'll need a Cloudflare account (free) to use this service."
     echo
-    echo "Benefits of Azure Dev Tunnels:"
-    echo "• Free tier available"
-    echo "• Secure HTTPS tunnels"
-    echo "• Custom subdomain support"
-    echo "• Integrated with Microsoft ecosystem"
+    echo "Benefits of Cloudflare Tunnel:"
+    echo "• Completely free"
+    echo "• No port forwarding needed"
+    echo "• Built-in DDoS protection"
+    echo "• Custom domain support"
+    echo "• Excellent performance and reliability"
     echo
-    read -p "Do you have a Microsoft/Azure account for Dev Tunnels? (y/N): " -n 1 -r
+    read -p "Do you have a Cloudflare account? (y/N): " -n 1 -r
     echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        read -p "Enter your Microsoft account email: " AZURE_USER_EMAIL
-        if [ -z "$AZURE_USER_EMAIL" ]; then
-            print_warning "No email provided. You'll need to login manually later."
-        fi
-    else
-        print_warning "You'll need to create a Microsoft account and login manually."
-        print_status "Visit: https://signup.live.com to create a free Microsoft account"
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        print_warning "You'll need to create a free Cloudflare account."
+        print_status "Visit: https://dash.cloudflare.com/sign-up to create a free account"
+        echo
+        read -p "Press Enter after creating your Cloudflare account..."
     fi
 }
 
@@ -104,65 +101,84 @@ install_dependencies() {
         nano \
         wget \
         unzip \
-        jq
+        jq \
+        lsb-release
     print_success "System packages installed"
 }
 
-install_azure_dev_tunnels() {
-    print_status "Installing Azure Dev Tunnels CLI..."
+install_cloudflared() {
+    print_status "Installing Cloudflare Tunnel (cloudflared)..."
     
-    cd /tmp
+    # Add Cloudflare GPG key
+    curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
     
-    # Detect architecture
-    ARCH=$(uname -m)
-    if [[ "$ARCH" == "armv7l" ]] || [[ "$ARCH" == "armv6l" ]]; then
-        DEVTUNNEL_URL="https://aka.ms/TunnelsCliDownload/linux-arm"
-    elif [[ "$ARCH" == "aarch64" ]]; then
-        DEVTUNNEL_URL="https://aka.ms/TunnelsCliDownload/linux-arm64"
-    else
-        DEVTUNNEL_URL="https://aka.ms/TunnelsCliDownload/linux-x64"
-    fi
+    # Add Cloudflare repository
+    echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared bullseye main' | sudo tee /etc/apt/sources.list.d/cloudflared.list
     
-    print_status "Downloading Dev Tunnels CLI for $ARCH..."
-    wget -O devtunnel "$DEVTUNNEL_URL"
-    chmod +x devtunnel
-    sudo mv devtunnel /usr/local/bin/
+    # Update package list and install cloudflared
+    sudo apt update
+    sudo apt install -y cloudflared
     
-    print_success "Azure Dev Tunnels CLI installed"
+    print_success "Cloudflared installed successfully"
     
     # Test installation
-    if /usr/local/bin/devtunnel --version > /dev/null 2>&1; then
-        print_success "Dev Tunnels CLI is working"
+    if cloudflared --version > /dev/null 2>&1; then
+        print_success "Cloudflared is working"
+        cloudflared --version
     else
-        print_error "Dev Tunnels CLI installation failed"
+        print_error "Cloudflared installation failed"
         exit 1
     fi
 }
 
-setup_azure_login() {
-    print_status "Setting up Azure Dev Tunnels authentication..."
+setup_cloudflare_auth() {
+    print_status "Setting up Cloudflare authentication..."
     
     echo
-    echo "You need to authenticate with Microsoft/Azure to use Dev Tunnels."
-    echo "This will open a browser window or provide a device code for authentication."
+    echo "You need to authenticate with Cloudflare to create tunnels."
+    echo "This will open a browser window for authentication."
     echo
-    read -p "Proceed with Azure login? (y/N): " -n 1 -r
+    read -p "Proceed with Cloudflare login? (y/N): " -n 1 -r
     echo
     
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        print_status "Starting Azure authentication..."
-        echo "If you're using SSH, you'll get a device code to enter at https://microsoft.com/devicelogin"
+        print_status "Starting Cloudflare authentication..."
+        echo "If you're using SSH, copy and paste the URL that appears into your browser."
         
-        if /usr/local/bin/devtunnel user login; then
-            print_success "Azure authentication successful"
+        if cloudflared tunnel login; then
+            print_success "Cloudflare authentication successful"
         else
-            print_error "Azure authentication failed"
-            print_status "You can authenticate later using: devtunnel user login"
+            print_error "Cloudflare authentication failed"
+            print_status "You can authenticate later using: cloudflared tunnel login"
+            exit 1
         fi
     else
-        print_warning "Skipping Azure login. You'll need to authenticate later."
-        print_status "Run this command later: devtunnel user login"
+        print_warning "Skipping Cloudflare login. You'll need to authenticate later."
+        print_status "Run this command later: cloudflared tunnel login"
+        exit 1
     fi
+}
+
+check_project_files() {
+    print_status "Checking for project files..."
+    
+    if [ ! -f "$HOME/server.py" ] && [ ! -f "$HOME/requirements.txt" ]; then
+        print_error "server.py and requirements.txt not found in $HOME"
+        print_status "Please ensure both files are in your home directory before running this script."
+        exit 1
+    fi
+    
+    if [ ! -f "$HOME/server.py" ]; then
+        print_error "server.py not found in $HOME"
+        exit 1
+    fi
+    
+    if [ ! -f "$HOME/requirements.txt" ]; then
+        print_error "requirements.txt not found in $HOME"
+        exit 1
+    fi
+    
+    print_success "Project files found"
 }
 
 setup_project_directory() {
@@ -182,97 +198,12 @@ setup_project_directory() {
     fi
     
     mkdir -p "$PROJECT_DIR"
-    cd "$PROJECT_DIR"
-    print_success "Project directory created: $PROJECT_DIR"
-}
-
-clone_or_download_code() {
-    print_status "Setting up project code..."
     
-    if [ -n "$REPO_URL" ]; then
-        print_status "Cloning from repository: $REPO_URL"
-        git clone "$REPO_URL" .
-        
-        # Rename ultrasonic_server.py to server.py if it exists
-        if [ -f "ultrasonic_server.py" ]; then
-            mv ultrasonic_server.py server.py
-            print_status "Renamed ultrasonic_server.py to server.py"
-        fi
-        
-        print_success "Repository cloned successfully"
-    else
-        print_status "No repository URL provided. You'll need to upload your code manually."
-        print_status "Creating placeholder files..."
-        
-        # Create placeholder requirements.txt for FastAPI
-        cat > requirements.txt << EOF
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-pydantic==2.5.0
-RPi.GPIO==0.7.1
-Adafruit-DHT==1.4.0
-spidev==3.6
-EOF
-        
-        cat > README.md << EOF
-# Multi-Sensor FastAPI Server with Azure Dev Tunnels
-
-Upload your server.py and requirements.txt files to this directory.
-
-## Supported Sensors
-- HC-SR04 Ultrasonic Distance Sensor
-- MQ-135 Air Quality Sensor
-- DHT11 Temperature/Humidity Sensor
-
-## Quick Start
-1. Upload server.py to $PROJECT_DIR
-2. Upload requirements.txt to $PROJECT_DIR
-3. Run: sudo systemctl start $SERVICE_NAME
-4. Run: sudo systemctl start $TUNNEL_SERVICE_NAME
-5. Check tunnel URL: $PROJECT_DIR/get_tunnel_url.sh
-
-## Local Access
-http://$(hostname -I | awk '{print $1}'):8000
-
-## API Documentation
-- Swagger UI: http://$(hostname -I | awk '{print $1}'):8000/docs
-- ReDoc: http://$(hostname -I | awk '{print $1}'):8000/redoc
-
-## External Access
-Check Azure Dev Tunnel URL with: $PROJECT_DIR/get_tunnel_url.sh
-
-## Manual Start
-\`\`\`bash
-cd $PROJECT_DIR
-source venv/bin/activate
-python3 server.py
-# In another terminal:
-devtunnel host -p 8000 --allow-anonymous
-\`\`\`
-
-## Pin Connections
-
-### HC-SR04 Ultrasonic Sensor:
-- VCC → 5V (Pin 2 or 4)
-- GND → Ground (Pin 6, 9, 14, 20, 25, 30, 34, or 39)
-- Trig → GPIO 18 (Pin 12)
-- Echo → GPIO 24 (Pin 18)
-
-### MQ-135 Air Quality Sensor:
-- VCC → 5V
-- GND → Ground
-- A0 → MCP3008 CH0 → SPI (CE0)
-- D0 → Not used
-
-### DHT11 Temperature/Humidity Sensor:
-- VCC → 3.3V
-- GND → Ground
-- Data → GPIO 22
-- Pull-up resistor (10kΩ) between VCC and Data
-EOF
-        
-        print_warning "Please upload your server.py and requirements.txt files to: $PROJECT_DIR"
-    fi
+    # Copy files from home directory
+    cp "$HOME/server.py" "$PROJECT_DIR/"
+    cp "$HOME/requirements.txt" "$PROJECT_DIR/"
+    
+    print_success "Project directory created and files copied: $PROJECT_DIR"
 }
 
 setup_virtual_environment() {
@@ -285,31 +216,52 @@ setup_virtual_environment() {
     pip install --upgrade pip
     
     # Install requirements
-    if [ -f "requirements.txt" ]; then
-        pip install -r requirements.txt
-    else
-        pip install fastapi uvicorn[standard] pydantic RPi.GPIO Adafruit-DHT spidev
-    fi
+    pip install -r requirements.txt
     
     print_success "Virtual environment created and packages installed"
 }
 
-create_tunnel() {
-    print_status "Creating Azure Dev Tunnel..."
+create_cloudflare_tunnel() {
+    print_status "Creating Cloudflare Tunnel..."
     
-    # Create a persistent tunnel
-    if /usr/local/bin/devtunnel create --allow-anonymous --name "$TUNNEL_NAME" > /dev/null 2>&1; then
-        print_success "Azure Dev Tunnel '$TUNNEL_NAME' created successfully"
+    # Create tunnel
+    if cloudflared tunnel create "$TUNNEL_NAME"; then
+        print_success "Cloudflare Tunnel '$TUNNEL_NAME' created successfully"
     else
-        print_warning "Tunnel creation failed or tunnel already exists"
-        print_status "This is normal if the tunnel was already created"
+        print_error "Failed to create Cloudflare Tunnel"
+        exit 1
     fi
+    
+    # Get tunnel ID
+    TUNNEL_ID=$(cloudflared tunnel list | grep "$TUNNEL_NAME" | awk '{print $1}')
+    
+    if [ -z "$TUNNEL_ID" ]; then
+        print_error "Could not retrieve tunnel ID"
+        exit 1
+    fi
+    
+    print_success "Tunnel ID: $TUNNEL_ID"
+    
+    # Create tunnel configuration
+    mkdir -p "$CLOUDFLARE_CONFIG_DIR"
+    
+    cat > "$CLOUDFLARE_CONFIG_DIR/config.yml" << EOF
+tunnel: $TUNNEL_ID
+credentials-file: $CLOUDFLARE_CONFIG_DIR/$TUNNEL_ID.json
+
+ingress:
+  - hostname: $TUNNEL_NAME.cfargotunnel.com
+    service: http://localhost:8000
+  - service: http_status:404
+EOF
+    
+    print_success "Tunnel configuration created"
 }
 
-create_systemd_service() {
-    print_status "Creating systemd service..."
+create_systemd_services() {
+    print_status "Creating systemd services..."
     
-    # Main API service (updated for FastAPI on port 8000)
+    # Main API service
     sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null << EOF
 [Unit]
 Description=Multi-Sensor FastAPI Server
@@ -332,10 +284,10 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
     
-    # Azure Dev Tunnels service
+    # Cloudflare Tunnel service
     sudo tee /etc/systemd/system/${TUNNEL_SERVICE_NAME}.service > /dev/null << EOF
 [Unit]
-Description=Azure Dev Tunnel for Multi-Sensor API
+Description=Cloudflare Tunnel for Multi-Sensor API
 After=network.target ${SERVICE_NAME}.service
 Wants=network.target
 Requires=${SERVICE_NAME}.service
@@ -344,8 +296,8 @@ Requires=${SERVICE_NAME}.service
 Type=simple
 User=$USER
 Group=$USER
-WorkingDirectory=$PROJECT_DIR
-ExecStart=/usr/local/bin/devtunnel host $TUNNEL_NAME -p 8000 --allow-anonymous
+WorkingDirectory=$HOME
+ExecStart=/usr/bin/cloudflared tunnel --config $CLOUDFLARE_CONFIG_DIR/config.yml run
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -355,7 +307,7 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
     
-    # Reload systemd
+    # Reload systemd and enable services
     sudo systemctl daemon-reload
     sudo systemctl enable ${SERVICE_NAME}.service
     sudo systemctl enable ${TUNNEL_SERVICE_NAME}.service
@@ -364,7 +316,7 @@ EOF
 }
 
 create_management_scripts() {
-    print_status "Creating convenience scripts..."
+    print_status "Creating management scripts..."
     
     # Create start script
     cat > "$PROJECT_DIR/start.sh" << EOF
@@ -379,50 +331,39 @@ EOF
     cat > "$PROJECT_DIR/get_tunnel_url.sh" << EOF
 #!/bin/bash
 
-echo "🌐 Checking Azure Dev Tunnel status..."
+echo "🌐 Checking Cloudflare Tunnel status..."
 echo
 
 # Check if tunnel service is running
 if ! sudo systemctl is-active --quiet $TUNNEL_SERVICE_NAME; then
-    echo "❌ Azure Dev Tunnel service is not running"
+    echo "❌ Cloudflare Tunnel service is not running"
     echo "Start it with: sudo systemctl start $TUNNEL_SERVICE_NAME"
     exit 1
 fi
 
-# Wait a moment for tunnel to establish
-sleep 2
-
 # Get tunnel information
-TUNNEL_INFO=\$(/usr/local/bin/devtunnel show $TUNNEL_NAME --output json 2>/dev/null)
+TUNNEL_LIST=\$(cloudflared tunnel list 2>/dev/null)
 
-if [ \$? -eq 0 ] && [ -n "\$TUNNEL_INFO" ]; then
-    # Extract the HTTPS URL
-    TUNNEL_URL=\$(echo "\$TUNNEL_INFO" | jq -r '.endpoints[] | select(.hostHeader != null) | "https://" + .hostHeader' 2>/dev/null | head -1)
-    
-    if [ -n "\$TUNNEL_URL" ] && [ "\$TUNNEL_URL" != "null" ]; then
-        echo "✅ Azure Dev Tunnel is active!"
-        echo "🌐 External URL: \$TUNNEL_URL"
-        echo
-        echo "📡 Test your Multi-Sensor API:"
-        echo "   \$TUNNEL_URL/ (Homepage with documentation)"
-        echo "   \$TUNNEL_URL/docs (Swagger UI)"
-        echo "   \$TUNNEL_URL/sensors (All sensor readings)"
-        echo "   \$TUNNEL_URL/sensors/ultrasonic (Distance sensor)"
-        echo "   \$TUNNEL_URL/sensors/mq135 (Air quality sensor)"
-        echo "   \$TUNNEL_URL/sensors/dht11 (Temperature/Humidity)"
-        echo "   \$TUNNEL_URL/sensors/alerts (Sensor alerts)"
-        echo "   \$TUNNEL_URL/health (Health check)"
-        echo
-        echo "📋 Use this URL to connect from any device on any network!"
-    else
-        echo "❌ Could not extract tunnel URL"
-        echo "Check tunnel logs: sudo journalctl -u $TUNNEL_SERVICE_NAME -f"
-    fi
+if [ \$? -eq 0 ] && echo "\$TUNNEL_LIST" | grep -q "$TUNNEL_NAME"; then
+    echo "✅ Cloudflare Tunnel is active!"
+    echo "🌐 External URL: https://$TUNNEL_NAME.cfargotunnel.com"
+    echo
+    echo "📡 Test your Multi-Sensor API:"
+    echo "   https://$TUNNEL_NAME.cfargotunnel.com/ (Homepage)"
+    echo "   https://$TUNNEL_NAME.cfargotunnel.com/docs (Swagger UI)"
+    echo "   https://$TUNNEL_NAME.cfargotunnel.com/sensors (All sensors)"
+    echo "   https://$TUNNEL_NAME.cfargotunnel.com/sensors/ultrasonic (Distance)"
+    echo "   https://$TUNNEL_NAME.cfargotunnel.com/sensors/mq135 (Air quality)"
+    echo "   https://$TUNNEL_NAME.cfargotunnel.com/sensors/dht11 (Temperature/Humidity)"
+    echo "   https://$TUNNEL_NAME.cfargotunnel.com/sensors/alerts (Alerts)"
+    echo "   https://$TUNNEL_NAME.cfargotunnel.com/health (Health check)"
+    echo
+    echo "📋 Use this URL to connect from any device anywhere in the world!"
 else
     echo "❌ Could not get tunnel information"
     echo "Possible issues:"
-    echo "- Not logged in to Azure (run: devtunnel user login)"
-    echo "- Tunnel not created (run: devtunnel create --allow-anonymous --name $TUNNEL_NAME)"
+    echo "- Not logged in to Cloudflare (run: cloudflared tunnel login)"
+    echo "- Tunnel not created properly"
     echo "- Network connectivity issues"
     echo
     echo "Check tunnel logs: sudo journalctl -u $TUNNEL_SERVICE_NAME -f"
@@ -460,7 +401,7 @@ case "\$1" in
         echo "=== Multi-Sensor API Service Status ==="
         sudo systemctl status $SERVICE_NAME --no-pager
         echo
-        echo "=== Azure Dev Tunnel Service Status ==="
+        echo "=== Cloudflare Tunnel Service Status ==="
         sudo systemctl status $TUNNEL_SERVICE_NAME --no-pager
         ;;
     logs)
@@ -490,25 +431,29 @@ case "\$1" in
         echo "Services disabled"
         ;;
     login)
-        devtunnel user login
+        cloudflared tunnel login
         ;;
     tunnel-create)
-        devtunnel create --allow-anonymous --name $TUNNEL_NAME
+        cloudflared tunnel create $TUNNEL_NAME
         echo "Tunnel '$TUNNEL_NAME' created"
         ;;
     tunnel-list)
-        devtunnel list
+        cloudflared tunnel list
         ;;
     tunnel-delete)
         read -p "Are you sure you want to delete tunnel '$TUNNEL_NAME'? (y/N): " -n 1 -r
         echo
         if [[ \$REPLY =~ ^[Yy]$ ]]; then
-            devtunnel delete $TUNNEL_NAME
+            cloudflared tunnel delete $TUNNEL_NAME
             echo "Tunnel deleted"
         fi
         ;;
+    tunnel-config)
+        echo "Current tunnel configuration:"
+        cat $CLOUDFLARE_CONFIG_DIR/config.yml
+        ;;
     *)
-        echo "Usage: \$0 {start|stop|restart|status|logs|url|enable|disable|login|tunnel-create|tunnel-list|tunnel-delete}"
+        echo "Usage: \$0 {start|stop|restart|status|logs|url|enable|disable|login|tunnel-create|tunnel-list|tunnel-delete|tunnel-config}"
         echo
         echo "Commands:"
         echo "  start         - Start both API and tunnel services"
@@ -519,10 +464,11 @@ case "\$1" in
         echo "  url           - Get current tunnel URL"
         echo "  enable        - Enable auto-start on boot"
         echo "  disable       - Disable auto-start on boot"
-        echo "  login         - Login to Azure Dev Tunnels"
+        echo "  login         - Login to Cloudflare"
         echo "  tunnel-create - Create a new tunnel"
         echo "  tunnel-list   - List all tunnels"
         echo "  tunnel-delete - Delete the current tunnel"
+        echo "  tunnel-config - Show tunnel configuration"
         exit 1
         ;;
 esac
@@ -561,23 +507,24 @@ test_installation() {
     
     python3 -c "import fastapi; print('FastAPI:', fastapi.__version__)" 2>/dev/null || print_error "FastAPI import failed"
     python3 -c "import uvicorn; print('Uvicorn imported successfully')" 2>/dev/null || print_error "Uvicorn import failed"
-    python3 -c "import pydantic; print('Pydantic:', pydantic.__version__)" 2>/dev/null || print_error "Pydantic import failed"
+    python3 -c "import pydantic; print('Pydantic imported successfully')" 2>/dev/null || print_error "Pydantic import failed"
     
     # Try to import RPi.GPIO (might fail on non-Pi systems)
     python3 -c "import RPi.GPIO; print('RPi.GPIO imported successfully')" 2>/dev/null || print_warning "RPi.GPIO import failed (normal on non-Pi systems)"
     
-    # Try to import Adafruit_DHT
-    python3 -c "import Adafruit_DHT; print('Adafruit_DHT imported successfully')" 2>/dev/null || print_warning "Adafruit_DHT import failed"
-    
-    # Try to import spidev
-    python3 -c "import spidev; print('spidev imported successfully')" 2>/dev/null || print_warning "spidev import failed"
-    
-    # Test Azure Dev Tunnels CLI
-    if command -v devtunnel &> /dev/null; then
-        print_success "Azure Dev Tunnels CLI installed successfully"
-        /usr/local/bin/devtunnel --version
+    # Test Cloudflared
+    if command -v cloudflared &> /dev/null; then
+        print_success "Cloudflared installed successfully"
+        cloudflared --version
     else
-        print_error "Azure Dev Tunnels CLI installation failed"
+        print_error "Cloudflared installation failed"
+    fi
+    
+    # Check tunnel configuration
+    if [ -f "$CLOUDFLARE_CONFIG_DIR/config.yml" ]; then
+        print_success "Tunnel configuration found"
+    else
+        print_error "Tunnel configuration missing"
     fi
     
     print_success "Installation test completed"
@@ -592,18 +539,9 @@ display_usage_info() {
     echo "📁 Project directory: $PROJECT_DIR"
     echo "🏠 Local API URL: http://$IP:8000"
     echo "📚 API Documentation: http://$IP:8000/docs (Swagger UI)"
-    echo "🌐 External access: via Azure Dev Tunnels (see commands below)"
+    echo "🌐 External URL: https://$TUNNEL_NAME.cfargotunnel.com"
     echo
-    echo "📋 Next steps:"
-    echo "  1. If you haven't already, upload your files to:"
-    echo "     server.py → $PROJECT_DIR"
-    echo "     requirements.txt → $PROJECT_DIR"
-    echo
-    echo "  2. If not logged in to Azure, authenticate:"
-    echo "     $PROJECT_DIR/manage.sh login"
-    echo "     (You'll need a Microsoft account - free at https://signup.live.com)"
-    echo
-    echo "  3. Wire your sensors:"
+    echo "📋 Sensor Wiring Guide:"
     echo
     echo "     🌊 HC-SR04 Ultrasonic Sensor:"
     echo "     VCC  → 5V (Pin 2 or 4)"
@@ -628,7 +566,6 @@ display_usage_info() {
     echo "  Check status:         $PROJECT_DIR/manage.sh status"
     echo "  Get tunnel URL:       $PROJECT_DIR/manage.sh url"
     echo "  View logs:            $PROJECT_DIR/manage.sh logs"
-    echo "  Azure login:          $PROJECT_DIR/manage.sh login"
     echo "  Manual start:         $PROJECT_DIR/start.sh"
     echo
     echo "🔧 Individual service commands:"
@@ -637,11 +574,7 @@ display_usage_info() {
     echo "  sudo systemctl stop $SERVICE_NAME"
     echo "  sudo systemctl stop $TUNNEL_SERVICE_NAME"
     echo
-    echo "📡 Test API endpoints:"
-    echo "  Local:  curl http://localhost:8000/sensors"
-    echo "  Remote: Use the tunnel URL from 'manage.sh url'"
-    echo
-    echo "🌐 API Endpoints:"
+    echo "🌐 API Endpoints (accessible via both local and tunnel URLs):"
     echo "  /                    - Homepage with documentation"
     echo "  /docs               - Interactive API docs (Swagger)"
     echo "  /sensors            - All sensor readings"
@@ -652,50 +585,41 @@ display_usage_info() {
     echo "  /health             - Health check all sensors"
     echo "  /config             - Sensor configurations"
     echo
-    echo "🌐 Getting your external URL:"
-    echo "  After starting services, run: $PROJECT_DIR/manage.sh url"
-    echo "  This URL will work from anywhere in the world!"
+    echo "📡 Test API endpoints:"
+    echo "  Local:  curl http://localhost:8000/sensors"
+    echo "  Remote: curl https://$TUNNEL_NAME.cfargotunnel.com/sensors"
     echo
-    echo "🔑 Azure Dev Tunnels Commands:"
-    echo "  devtunnel user login                    - Authenticate with Microsoft"
-    echo "  devtunnel list                         - List all your tunnels"
-    echo "  devtunnel create --allow-anonymous     - Create a new tunnel"
-    echo "  devtunnel host -p 8000 --allow-anonymous - Host on port 8000"
-    echo "  devtunnel delete TUNNEL_NAME           - Delete a tunnel"
+    echo "🌐 Your External URL: https://$TUNNEL_NAME.cfargotunnel.com"
+    echo "   This URL works from anywhere in the world!"
     echo
-    if [ -z "$REPO_URL" ]; then
-        print_warning "Remember to upload your server.py and requirements.txt files before starting the service!"
-    fi
-    
-    print_warning "Remember to login to Azure Dev Tunnels: $PROJECT_DIR/manage.sh login"
+    echo "🔑 Cloudflare Tunnel Commands:"
+    echo "  cloudflared tunnel login                - Authenticate with Cloudflare"
+    echo "  cloudflared tunnel list                 - List all your tunnels"
+    echo "  cloudflared tunnel create TUNNEL_NAME  - Create a new tunnel"
+    echo "  cloudflared tunnel delete TUNNEL_NAME  - Delete a tunnel"
+    echo "  cloudflared tunnel run TUNNEL_NAME     - Run tunnel manually"
 }
 
 # Main execution
 main() {
-    echo "🚀 Multi-Sensor FastAPI Server Setup with Azure Dev Tunnels"
-    echo "==========================================================="
-    
-    # Parse arguments
-    if [ $# -gt 0 ]; then
-        REPO_URL=$1
-        print_status "Repository URL provided: $REPO_URL"
-    fi
+    echo "🚀 Multi-Sensor FastAPI Server Setup with Cloudflare Tunnel"
+    echo "============================================================="
     
     # Pre-flight checks
     check_root
     check_raspberry_pi
-    get_azure_account_info
+    get_cloudflare_info
+    check_project_files
     
     # Setup steps
     update_system
     install_dependencies
-    install_azure_dev_tunnels
-    setup_azure_login
+    install_cloudflared
+    setup_cloudflare_auth
     setup_project_directory
-    clone_or_download_code
     setup_virtual_environment
-    create_tunnel
-    create_systemd_service
+    create_cloudflare_tunnel
+    create_systemd_services
     create_management_scripts
     setup_gpio_permissions
     test_installation
@@ -705,20 +629,18 @@ main() {
     
     echo
     print_success "Setup script completed! 🎉"
-    
-    if [ -n "$REPO_URL" ] && [ -f "$PROJECT_DIR/server.py" ]; then
+    echo
+    read -p "Would you like to start both services now? (y/N): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        sudo systemctl start $SERVICE_NAME
+        sleep 2
+        sudo systemctl start $TUNNEL_SERVICE_NAME
+        sleep 3
         echo
-        read -p "Would you like to start both services now? (y/N): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            sudo systemctl start $SERVICE_NAME
-            sleep 2
-            sudo systemctl start $TUNNEL_SERVICE_NAME
-            sleep 3
-            echo
-            print_status "Services started! Getting your external URL..."
-            "$PROJECT_DIR/get_tunnel_url.sh"
-        fi
+        print_status "Services started! Your API is now accessible at:"
+        echo "🌐 https://$TUNNEL_NAME.cfargotunnel.com"
+        "$PROJECT_DIR/get_tunnel_url.sh"
     fi
 }
 
