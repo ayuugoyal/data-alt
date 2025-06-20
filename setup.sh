@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Multi-Sensor FastAPI Server Setup Script with Cloudflare Tunnel
-# This script sets up the complete environment for the multi-sensor FastAPI server with external access via Cloudflare Tunnel
+# Fixed Multi-Sensor FastAPI Server Setup Script with Cloudflare Tunnel
+# This script fixes the Cloudflare authentication and tunnel creation issues
 
 set -e  # Exit on any error
 
@@ -18,8 +18,10 @@ PROJECT_DIR="$HOME/$PROJECT_NAME"
 SERVICE_NAME="multi-sensor-api"
 TUNNEL_SERVICE_NAME="cloudflared-tunnel"
 USER=$(whoami)
-TUNNEL_NAME="multi-sensor-tunnel"
+TUNNEL_NAME="multi-sensor-tunnel-$(date +%s)"  # Add timestamp for uniqueness
 CLOUDFLARE_CONFIG_DIR="$HOME/.cloudflared"
+CUSTOM_DOMAIN=""
+USE_CUSTOM_DOMAIN=false
 
 # Functions
 print_status() {
@@ -62,23 +64,54 @@ get_cloudflare_info() {
     print_status "🌐 Setting up Cloudflare Tunnel for external access"
     echo
     echo "Cloudflare Tunnel provides secure access to local applications via Cloudflare's network."
-    echo "You'll need a Cloudflare account (free) to use this service."
+    echo "You'll get a FREE .trycloudflare.com subdomain automatically."
     echo
     echo "Benefits of Cloudflare Tunnel:"
     echo "• Completely free"
     echo "• No port forwarding needed"
     echo "• Built-in DDoS protection"
-    echo "• Custom domain support"
+    echo "• FREE .trycloudflare.com subdomain"
+    echo "• Custom domain support (optional)"
     echo "• Excellent performance and reliability"
     echo
-    read -p "Do you have a Cloudflare account? (y/N): " -n 1 -r
+    
+    # Simplified domain question
+    echo "Domain Options:"
+    echo "1. Use FREE .trycloudflare.com subdomain (recommended for testing)"
+    echo "2. Use custom domain (requires domain in Cloudflare)"
     echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        print_warning "You'll need to create a free Cloudflare account."
-        print_status "Visit: https://dash.cloudflare.com/sign-up to create a free account"
-        echo
-        read -p "Press Enter after creating your Cloudflare account..."
-    fi
+    read -p "Choose option (1 or 2): " domain_choice
+    
+    case $domain_choice in
+        2)
+            read -p "Enter your custom domain/subdomain (e.g., api.yourdomain.com): " CUSTOM_DOMAIN
+            if [ -n "$CUSTOM_DOMAIN" ]; then
+                USE_CUSTOM_DOMAIN=true
+                print_status "Will configure tunnel for: $CUSTOM_DOMAIN"
+                echo
+                print_warning "Important: Make sure your domain is added to Cloudflare Dashboard!"
+                print_status "Your domain must be managed by Cloudflare for this to work."
+                echo
+                read -p "Is your domain already in Cloudflare Dashboard? (y/N): " -n 1 -r
+                echo
+                if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                    print_warning "Please add your domain to Cloudflare first:"
+                    print_status "1. Go to https://dash.cloudflare.com"
+                    print_status "2. Click 'Add Site' and enter your domain"
+                    print_status "3. Follow the setup instructions"
+                    echo
+                    read -p "Press Enter after adding your domain to Cloudflare..."
+                fi
+            else
+                print_warning "No domain provided, using free subdomain"
+                USE_CUSTOM_DOMAIN=false
+            fi
+            ;;
+        *)
+            print_status "Using free .trycloudflare.com subdomain"
+            USE_CUSTOM_DOMAIN=false
+            ;;
+    esac
 }
 
 update_system() {
@@ -109,6 +142,13 @@ install_dependencies() {
 install_cloudflared() {
     print_status "Installing Cloudflare Tunnel (cloudflared)..."
     
+    # Check if already installed
+    if command -v cloudflared &> /dev/null; then
+        print_status "Cloudflared already installed"
+        cloudflared --version
+        return
+    fi
+    
     # Add Cloudflare GPG key
     curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
     
@@ -134,27 +174,51 @@ install_cloudflared() {
 setup_cloudflare_auth() {
     print_status "Setting up Cloudflare authentication..."
     
+    # Check if already authenticated
+    if [ -f "$HOME/.cloudflared/cert.pem" ]; then
+        print_status "Already authenticated with Cloudflare"
+        return
+    fi
+    
     echo
-    echo "You need to authenticate with Cloudflare to create tunnels."
-    echo "This will open a browser window for authentication."
-    echo
-    read -p "Proceed with Cloudflare login? (y/N): " -n 1 -r
+    echo "📝 Cloudflare Authentication Steps:"
+    echo "1. You need a FREE Cloudflare account"
+    echo "2. The login process will show you a URL"
+    echo "3. Copy the URL and open it in your browser"
+    echo "4. Login to Cloudflare and authorize the tunnel"
+    echo "5. You'll see a success message in your browser"
     echo
     
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        print_status "Starting Cloudflare authentication..."
-        echo "If you're using SSH, copy and paste the URL that appears into your browser."
+    read -p "Do you have a Cloudflare account? (y/N): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        print_status "Create a free account at: https://dash.cloudflare.com/sign-up"
+        read -p "Press Enter after creating your account..."
+    fi
+    
+    print_status "Starting Cloudflare authentication..."
+    echo
+    print_warning "IMPORTANT: Copy the URL that appears below and paste it in your browser!"
+    echo
+    
+    # Try authentication with better error handling
+    if timeout 120 cloudflared tunnel login; then
+        print_success "Cloudflare authentication successful!"
         
-        if cloudflared tunnel login; then
-            print_success "Cloudflare authentication successful"
+        # Verify authentication worked
+        if [ -f "$HOME/.cloudflared/cert.pem" ]; then
+            print_success "Certificate file created successfully"
         else
-            print_error "Cloudflare authentication failed"
-            print_status "You can authenticate later using: cloudflared tunnel login"
+            print_error "Authentication may have failed - no certificate file found"
             exit 1
         fi
     else
-        print_warning "Skipping Cloudflare login. You'll need to authenticate later."
-        print_status "Run this command later: cloudflared tunnel login"
+        print_error "Cloudflare authentication failed or timed out"
+        print_status "Troubleshooting tips:"
+        print_status "1. Make sure you have a Cloudflare account"
+        print_status "2. Copy the full URL shown above"
+        print_status "3. Complete the browser authorization"
+        print_status "4. Try running: cloudflared tunnel login"
         exit 1
     fi
 }
@@ -224,16 +288,25 @@ setup_virtual_environment() {
 create_cloudflare_tunnel() {
     print_status "Creating Cloudflare Tunnel..."
     
-    # Create tunnel
-    if cloudflared tunnel create "$TUNNEL_NAME"; then
-        print_success "Cloudflare Tunnel '$TUNNEL_NAME' created successfully"
+    # Check if tunnel already exists
+    if cloudflared tunnel list 2>/dev/null | grep -q "$TUNNEL_NAME"; then
+        print_warning "Tunnel '$TUNNEL_NAME' already exists"
+        TUNNEL_ID=$(cloudflared tunnel list | grep "$TUNNEL_NAME" | awk '{print $1}')
     else
-        print_error "Failed to create Cloudflare Tunnel"
-        exit 1
+        # Create tunnel
+        print_status "Creating new tunnel: $TUNNEL_NAME"
+        if cloudflared tunnel create "$TUNNEL_NAME"; then
+            print_success "Cloudflare Tunnel '$TUNNEL_NAME' created successfully"
+            TUNNEL_ID=$(cloudflared tunnel list | grep "$TUNNEL_NAME" | awk '{print $1}')
+        else
+            print_error "Failed to create Cloudflare Tunnel"
+            print_status "Possible issues:"
+            print_status "1. Not authenticated - run: cloudflared tunnel login"
+            print_status "2. Network connectivity issues"
+            print_status "3. Cloudflare service issues"
+            exit 1
+        fi
     fi
-    
-    # Get tunnel ID
-    TUNNEL_ID=$(cloudflared tunnel list | grep "$TUNNEL_NAME" | awk '{print $1}')
     
     if [ -z "$TUNNEL_ID" ]; then
         print_error "Could not retrieve tunnel ID"
@@ -242,18 +315,56 @@ create_cloudflare_tunnel() {
     
     print_success "Tunnel ID: $TUNNEL_ID"
     
-    # Create tunnel configuration
+    # Create tunnel configuration directory
     mkdir -p "$CLOUDFLARE_CONFIG_DIR"
     
-    cat > "$CLOUDFLARE_CONFIG_DIR/config.yml" << EOF
+    # Determine hostname and create configuration
+    if [ "$USE_CUSTOM_DOMAIN" = true ] && [ -n "$CUSTOM_DOMAIN" ]; then
+        HOSTNAME="$CUSTOM_DOMAIN"
+        print_status "Using custom domain: $HOSTNAME"
+        
+        # Create DNS record for custom domain
+        print_status "Creating DNS record for $CUSTOM_DOMAIN..."
+        if cloudflared tunnel route dns "$TUNNEL_NAME" "$CUSTOM_DOMAIN"; then
+            print_success "DNS record created for $CUSTOM_DOMAIN"
+        else
+            print_warning "Could not create DNS record automatically"
+            print_status "Please create it manually in Cloudflare Dashboard:"
+            print_status "1. Go to https://dash.cloudflare.com"
+            print_status "2. Select your domain"
+            print_status "3. Go to DNS settings"
+            print_status "4. Add CNAME record: $CUSTOM_DOMAIN → $TUNNEL_ID.cfargotunnel.com"
+        fi
+        
+        # Create config for custom domain
+        cat > "$CLOUDFLARE_CONFIG_DIR/config.yml" << EOF
 tunnel: $TUNNEL_ID
 credentials-file: $CLOUDFLARE_CONFIG_DIR/$TUNNEL_ID.json
 
 ingress:
-  - hostname: $TUNNEL_NAME.cfargotunnel.com
+  - hostname: $HOSTNAME
     service: http://localhost:8000
   - service: http_status:404
 EOF
+    else
+        # Use trycloudflare.com (no hostname needed)
+        HOSTNAME="Generated automatically"
+        print_status "Using free .trycloudflare.com subdomain"
+        
+        # Create config for trycloudflare
+        cat > "$CLOUDFLARE_CONFIG_DIR/config.yml" << EOF
+tunnel: $TUNNEL_ID
+credentials-file: $CLOUDFLARE_CONFIG_DIR/$TUNNEL_ID.json
+
+ingress:
+  - service: http://localhost:8000
+EOF
+    fi
+    
+    # Save configuration info
+    echo "$HOSTNAME" > "$PROJECT_DIR/.tunnel_hostname"
+    echo "$TUNNEL_ID" > "$PROJECT_DIR/.tunnel_id"
+    echo "$USE_CUSTOM_DOMAIN" > "$PROJECT_DIR/.use_custom_domain"
     
     print_success "Tunnel configuration created"
 }
@@ -319,7 +430,7 @@ create_management_scripts() {
     print_status "Creating management scripts..."
     
     # Create start script
-    cat > "$PROJECT_DIR/start.sh" << EOF
+    cat > "$PROJECT_DIR/start.sh" << 'EOF'
 #!/bin/bash
 cd $PROJECT_DIR
 source venv/bin/activate
@@ -341,33 +452,54 @@ if ! sudo systemctl is-active --quiet $TUNNEL_SERVICE_NAME; then
     exit 1
 fi
 
-# Get tunnel information
-TUNNEL_LIST=\$(cloudflared tunnel list 2>/dev/null)
+# Check if using custom domain
+USE_CUSTOM=\$(cat "$PROJECT_DIR/.use_custom_domain" 2>/dev/null || echo "false")
 
-if [ \$? -eq 0 ] && echo "\$TUNNEL_LIST" | grep -q "$TUNNEL_NAME"; then
-    echo "✅ Cloudflare Tunnel is active!"
-    echo "🌐 External URL: https://$TUNNEL_NAME.cfargotunnel.com"
-    echo
-    echo "📡 Test your Multi-Sensor API:"
-    echo "   https://$TUNNEL_NAME.cfargotunnel.com/ (Homepage)"
-    echo "   https://$TUNNEL_NAME.cfargotunnel.com/docs (Swagger UI)"
-    echo "   https://$TUNNEL_NAME.cfargotunnel.com/sensors (All sensors)"
-    echo "   https://$TUNNEL_NAME.cfargotunnel.com/sensors/ultrasonic (Distance)"
-    echo "   https://$TUNNEL_NAME.cfargotunnel.com/sensors/mq135 (Air quality)"
-    echo "   https://$TUNNEL_NAME.cfargotunnel.com/sensors/dht11 (Temperature/Humidity)"
-    echo "   https://$TUNNEL_NAME.cfargotunnel.com/sensors/alerts (Alerts)"
-    echo "   https://$TUNNEL_NAME.cfargotunnel.com/health (Health check)"
-    echo
-    echo "📋 Use this URL to connect from any device anywhere in the world!"
+if [ "\$USE_CUSTOM" = "true" ]; then
+    # Custom domain setup
+    if [ -f "$PROJECT_DIR/.tunnel_hostname" ]; then
+        HOSTNAME=\$(cat "$PROJECT_DIR/.tunnel_hostname")
+        echo "✅ Cloudflare Tunnel is active with custom domain!"
+        echo "🌐 External URL: https://\$HOSTNAME"
+    else
+        echo "❌ Custom domain configuration not found"
+        exit 1
+    fi
 else
-    echo "❌ Could not get tunnel information"
-    echo "Possible issues:"
-    echo "- Not logged in to Cloudflare (run: cloudflared tunnel login)"
-    echo "- Tunnel not created properly"
-    echo "- Network connectivity issues"
-    echo
-    echo "Check tunnel logs: sudo journalctl -u $TUNNEL_SERVICE_NAME -f"
+    # trycloudflare.com setup - need to get URL from logs
+    echo "🔍 Looking for tunnel URL in logs..."
+    TUNNEL_URL=\$(sudo journalctl -u $TUNNEL_SERVICE_NAME -n 50 --no-pager | grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' | tail -1)
+    
+    if [ -n "\$TUNNEL_URL" ]; then
+        echo "✅ Cloudflare Tunnel is active!"
+        echo "🌐 External URL: \$TUNNEL_URL"
+        echo "\$TUNNEL_URL" > "$PROJECT_DIR/.current_tunnel_url"
+    else
+        echo "❌ Could not find tunnel URL in logs"
+        echo "The tunnel might still be starting up. Wait a moment and try again."
+        echo "Check logs with: sudo journalctl -u $TUNNEL_SERVICE_NAME -f"
+        exit 1
+    fi
 fi
+
+echo
+echo "📡 Test your Multi-Sensor API:"
+if [ "\$USE_CUSTOM" = "true" ]; then
+    BASE_URL="https://\$HOSTNAME"
+else
+    BASE_URL="\$TUNNEL_URL"
+fi
+
+echo "   \$BASE_URL/ (Homepage)"
+echo "   \$BASE_URL/docs (Swagger UI)"
+echo "   \$BASE_URL/sensors (All sensors)"
+echo "   \$BASE_URL/sensors/ultrasonic (Distance)"
+echo "   \$BASE_URL/sensors/mq135 (Air quality)"
+echo "   \$BASE_URL/sensors/dht11 (Temperature/Humidity)"
+echo "   \$BASE_URL/sensors/alerts (Alerts)"
+echo "   \$BASE_URL/health (Health check)"
+echo
+echo "📋 Use this URL to connect from any device anywhere in the world!"
 EOF
     chmod +x "$PROJECT_DIR/get_tunnel_url.sh"
     
@@ -380,7 +512,7 @@ case "\$1" in
         sudo systemctl start $SERVICE_NAME
         sudo systemctl start $TUNNEL_SERVICE_NAME
         echo "Services started"
-        sleep 3
+        sleep 5
         echo "Getting tunnel URL..."
         $PROJECT_DIR/get_tunnel_url.sh
         ;;
@@ -393,7 +525,7 @@ case "\$1" in
         sudo systemctl restart $SERVICE_NAME
         sudo systemctl restart $TUNNEL_SERVICE_NAME
         echo "Services restarted"
-        sleep 3
+        sleep 5
         echo "Getting tunnel URL..."
         $PROJECT_DIR/get_tunnel_url.sh
         ;;
@@ -433,27 +565,15 @@ case "\$1" in
     login)
         cloudflared tunnel login
         ;;
-    tunnel-create)
-        cloudflared tunnel create $TUNNEL_NAME
-        echo "Tunnel '$TUNNEL_NAME' created"
-        ;;
     tunnel-list)
         cloudflared tunnel list
-        ;;
-    tunnel-delete)
-        read -p "Are you sure you want to delete tunnel '$TUNNEL_NAME'? (y/N): " -n 1 -r
-        echo
-        if [[ \$REPLY =~ ^[Yy]$ ]]; then
-            cloudflared tunnel delete $TUNNEL_NAME
-            echo "Tunnel deleted"
-        fi
         ;;
     tunnel-config)
         echo "Current tunnel configuration:"
         cat $CLOUDFLARE_CONFIG_DIR/config.yml
         ;;
     *)
-        echo "Usage: \$0 {start|stop|restart|status|logs|url|enable|disable|login|tunnel-create|tunnel-list|tunnel-delete|tunnel-config}"
+        echo "Usage: \$0 {start|stop|restart|status|logs|url|enable|disable|login|tunnel-list|tunnel-config}"
         echo
         echo "Commands:"
         echo "  start         - Start both API and tunnel services"
@@ -465,9 +585,7 @@ case "\$1" in
         echo "  enable        - Enable auto-start on boot"
         echo "  disable       - Disable auto-start on boot"
         echo "  login         - Login to Cloudflare"
-        echo "  tunnel-create - Create a new tunnel"
         echo "  tunnel-list   - List all tunnels"
-        echo "  tunnel-delete - Delete the current tunnel"
         echo "  tunnel-config - Show tunnel configuration"
         exit 1
         ;;
@@ -532,6 +650,7 @@ test_installation() {
 
 display_usage_info() {
     local IP=$(hostname -I | awk '{print $1}')
+    local USE_CUSTOM=$(cat "$PROJECT_DIR/.use_custom_domain" 2>/dev/null || echo "false")
     
     echo
     print_success "🎉 Setup completed successfully!"
@@ -539,7 +658,14 @@ display_usage_info() {
     echo "📁 Project directory: $PROJECT_DIR"
     echo "🏠 Local API URL: http://$IP:8000"
     echo "📚 API Documentation: http://$IP:8000/docs (Swagger UI)"
-    echo "🌐 External URL: https://$TUNNEL_NAME.cfargotunnel.com"
+    
+    if [ "$USE_CUSTOM" = "true" ]; then
+        local HOSTNAME=$(cat "$PROJECT_DIR/.tunnel_hostname")
+        echo "🌐 External URL: https://$HOSTNAME"
+    else
+        echo "🌐 External URL: Will be generated when tunnel starts (*.trycloudflare.com)"
+    fi
+    
     echo
     echo "📋 Sensor Wiring Guide:"
     echo
@@ -568,13 +694,7 @@ display_usage_info() {
     echo "  View logs:            $PROJECT_DIR/manage.sh logs"
     echo "  Manual start:         $PROJECT_DIR/start.sh"
     echo
-    echo "🔧 Individual service commands:"
-    echo "  sudo systemctl start $SERVICE_NAME"
-    echo "  sudo systemctl start $TUNNEL_SERVICE_NAME"
-    echo "  sudo systemctl stop $SERVICE_NAME"
-    echo "  sudo systemctl stop $TUNNEL_SERVICE_NAME"
-    echo
-    echo "🌐 API Endpoints (accessible via both local and tunnel URLs):"
+    echo "🌐 API Endpoints:"
     echo "  /                    - Homepage with documentation"
     echo "  /docs               - Interactive API docs (Swagger)"
     echo "  /sensors            - All sensor readings"
@@ -585,19 +705,11 @@ display_usage_info() {
     echo "  /health             - Health check all sensors"
     echo "  /config             - Sensor configurations"
     echo
-    echo "📡 Test API endpoints:"
-    echo "  Local:  curl http://localhost:8000/sensors"
-    echo "  Remote: curl https://$TUNNEL_NAME.cfargotunnel.com/sensors"
-    echo
-    echo "🌐 Your External URL: https://$TUNNEL_NAME.cfargotunnel.com"
-    echo "   This URL works from anywhere in the world!"
-    echo
-    echo "🔑 Cloudflare Tunnel Commands:"
-    echo "  cloudflared tunnel login                - Authenticate with Cloudflare"
-    echo "  cloudflared tunnel list                 - List all your tunnels"
-    echo "  cloudflared tunnel create TUNNEL_NAME  - Create a new tunnel"
-    echo "  cloudflared tunnel delete TUNNEL_NAME  - Delete a tunnel"
-    echo "  cloudflared tunnel run TUNNEL_NAME     - Run tunnel manually"
+    echo "🔑 Important Notes:"
+    echo "• Free .trycloudflare.com URLs change when tunnel restarts"
+    echo "• Use custom domain for permanent URL"
+    echo "• Check tunnel URL with: $PROJECT_DIR/manage.sh url"
+    echo "• Tunnel logs: sudo journalctl -u $TUNNEL_SERVICE_NAME -f"
 }
 
 # Main execution
@@ -636,10 +748,9 @@ main() {
         sudo systemctl start $SERVICE_NAME
         sleep 2
         sudo systemctl start $TUNNEL_SERVICE_NAME
-        sleep 3
+        sleep 5
         echo
-        print_status "Services started! Your API is now accessible at:"
-        echo "🌐 https://$TUNNEL_NAME.cfargotunnel.com"
+        print_status "Services started! Getting tunnel URL..."
         "$PROJECT_DIR/get_tunnel_url.sh"
     fi
 }
