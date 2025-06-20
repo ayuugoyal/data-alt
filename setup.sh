@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Multi-Sensor FastAPI Server Setup Script with ngrok
-# This script sets up the complete environment for the multi-sensor FastAPI server with external access via ngrok
+# Multi-Sensor FastAPI Server Setup Script with Cloudflare Tunnel
+# This script sets up the complete environment for the multi-sensor FastAPI server with external access via Cloudflare Tunnel
 
 set -e  # Exit on any error
 
@@ -17,9 +17,11 @@ PROJECT_NAME="multi-sensor-api"
 PROJECT_DIR="$HOME/$PROJECT_NAME"
 REPO_URL=""  # Will be set if provided as argument
 SERVICE_NAME="multi-sensor-api"
-NGROK_SERVICE_NAME="multi-sensor-ngrok"
+CLOUDFLARED_SERVICE_NAME="multi-sensor-cloudflared"
 USER=$(whoami)
-NGROK_AUTH_TOKEN=""  # Will be prompted for
+CLOUDFLARE_TOKEN=""  # Will be prompted for
+DOMAIN_NAME=""       # Will be prompted for
+SUBDOMAIN=""         # Will be prompted for
 
 # Functions
 print_status() {
@@ -57,28 +59,43 @@ check_raspberry_pi() {
     fi
 }
 
-get_ngrok_auth_token() {
+get_cloudflare_config() {
     echo
-    print_status "🌐 Setting up ngrok for external access"
-    echo "To use ngrok, you need a free account and auth token from https://ngrok.com"
+    print_status "🌐 Setting up Cloudflare Tunnel for external access"
+    echo "To use Cloudflare Tunnel, you need:"
+    echo "1. A domain registered with Cloudflare (DNS managed by Cloudflare)"
+    echo "2. A Cloudflare API token with Zone:Zone:Read and Zone:DNS:Edit permissions"
     echo
-    echo "Steps to get your auth token:"
-    echo "1. Go to https://ngrok.com and sign up for a free account"
-    echo "2. Go to https://dashboard.ngrok.com/get-started/your-authtoken"
-    echo "3. Copy your auth token"
+    echo "Steps to get your API token:"
+    echo "1. Go to https://dash.cloudflare.com/profile/api-tokens"
+    echo "2. Click 'Create Token'"
+    echo "3. Use 'Edit zone DNS' template or create custom token with:"
+    echo "   - Zone:Zone:Read"
+    echo "   - Zone:DNS:Edit"
+    echo "4. Select your zone (domain)"
+    echo "5. Copy the generated token"
     echo
-    read -p "Do you have an ngrok auth token? (y/N): " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        read -p "Enter your ngrok auth token: " NGROK_AUTH_TOKEN
-        if [ -z "$NGROK_AUTH_TOKEN" ]; then
-            print_warning "No auth token provided. ngrok will be installed but not configured."
-            print_warning "You can configure it later using: ngrok config add-authtoken YOUR_TOKEN"
-        fi
-    else
-        print_warning "Skipping ngrok auth token setup."
-        print_status "You can set it up later using: ngrok config add-authtoken YOUR_TOKEN"
+    
+    read -p "Enter your domain name (e.g., example.com): " DOMAIN_NAME
+    if [ -z "$DOMAIN_NAME" ]; then
+        print_error "Domain name is required for Cloudflare Tunnel"
+        exit 1
     fi
+    
+    read -p "Enter subdomain for API (e.g., sensors for sensors.example.com): " SUBDOMAIN
+    if [ -z "$SUBDOMAIN" ]; then
+        SUBDOMAIN="api"
+        print_status "Using default subdomain: api"
+    fi
+    
+    read -p "Enter your Cloudflare API token: " CLOUDFLARE_TOKEN
+    if [ -z "$CLOUDFLARE_TOKEN" ]; then
+        print_error "Cloudflare API token is required"
+        exit 1
+    fi
+    
+    print_success "Cloudflare configuration collected"
+    print_status "Your API will be accessible at: https://${SUBDOMAIN}.${DOMAIN_NAME}"
 }
 
 update_system() {
@@ -100,38 +117,23 @@ install_dependencies() {
         curl \
         nano \
         wget \
-        unzip
+        unzip \
+        lsb-release
     print_success "System packages installed"
 }
 
-install_ngrok() {
-    print_status "Installing ngrok..."
+install_cloudflared() {
+    print_status "Installing Cloudflare Tunnel (cloudflared)..."
     
-    # Download and install ngrok
-    cd /tmp
+    # Add Cloudflare GPG key and repository
+    curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+    echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared $(lsb_release -cs) main' | sudo tee /etc/apt/sources.list.d/cloudflared.list
     
-    # Detect architecture
-    ARCH=$(uname -m)
-    if [[ "$ARCH" == "armv7l" ]] || [[ "$ARCH" == "armv6l" ]]; then
-        NGROK_URL="https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm.tgz"
-    elif [[ "$ARCH" == "aarch64" ]]; then
-        NGROK_URL="https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.tgz"
-    else
-        NGROK_URL="https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz"
-    fi
+    # Update and install
+    sudo apt update
+    sudo apt install -y cloudflared
     
-    wget -O ngrok.tgz "$NGROK_URL"
-    tar -xzf ngrok.tgz
-    sudo mv ngrok /usr/local/bin/
-    rm ngrok.tgz
-    
-    # Configure ngrok if auth token is provided
-    if [ -n "$NGROK_AUTH_TOKEN" ]; then
-        ngrok config add-authtoken "$NGROK_AUTH_TOKEN"
-        print_success "ngrok installed and configured with auth token"
-    else
-        print_success "ngrok installed (auth token not configured)"
-    fi
+    print_success "cloudflared installed successfully"
 }
 
 setup_project_directory() {
@@ -177,9 +179,9 @@ spidev==3.6
 EOF
         
         cat > README.md << EOF
-# Multi-Sensor FastAPI Server with ngrok
+# Multi-Sensor FastAPI Server with Cloudflare Tunnel
 
-Upload your ultrasonic_server.py and requirements.txt files to this directory.
+Upload your server.py and requirements.txt files to this directory.
 
 ## Supported Sensors
 - HC-SR04 Ultrasonic Distance Sensor
@@ -187,11 +189,11 @@ Upload your ultrasonic_server.py and requirements.txt files to this directory.
 - DHT11 Temperature/Humidity Sensor
 
 ## Quick Start
-1. Upload ultrasonic_server.py to $PROJECT_DIR
+1. Upload server.py to $PROJECT_DIR
 2. Upload requirements.txt to $PROJECT_DIR
 3. Run: sudo systemctl start $SERVICE_NAME
-4. Run: sudo systemctl start $NGROK_SERVICE_NAME
-5. Check ngrok URL: $PROJECT_DIR/get_ngrok_url.sh
+4. Run: sudo systemctl start $CLOUDFLARED_SERVICE_NAME
+5. Access API: https://${SUBDOMAIN}.${DOMAIN_NAME}
 
 ## Local Access
 http://$(hostname -I | awk '{print $1}'):8000
@@ -201,15 +203,15 @@ http://$(hostname -I | awk '{print $1}'):8000
 - ReDoc: http://$(hostname -I | awk '{print $1}'):8000/redoc
 
 ## External Access
-Check ngrok URL with: $PROJECT_DIR/get_ngrok_url.sh
+https://${SUBDOMAIN}.${DOMAIN_NAME}
 
 ## Manual Start
 \`\`\`bash
 cd $PROJECT_DIR
 source venv/bin/activate
-python3 ultrasonic_server.py
+python3 server.py
 # In another terminal:
-ngrok http 8000
+cloudflared tunnel run
 \`\`\`
 
 ## Pin Connections
@@ -233,7 +235,7 @@ ngrok http 8000
 - Pull-up resistor (10kΩ) between VCC and Data
 EOF
         
-        print_warning "Please upload your ultrasonic_server.py and requirements.txt files to: $PROJECT_DIR"
+        print_warning "Please upload your server.py and requirements.txt files to: $PROJECT_DIR"
     fi
 }
 
@@ -256,10 +258,53 @@ setup_virtual_environment() {
     print_success "Virtual environment created and packages installed"
 }
 
-create_systemd_service() {
-    print_status "Creating systemd service..."
+setup_cloudflare_tunnel() {
+    print_status "Setting up Cloudflare Tunnel..."
     
-    # Main API service (updated for FastAPI on port 8000)
+    # Create tunnel
+    TUNNEL_NAME="multi-sensor-api-$(date +%s)"
+    print_status "Creating tunnel: $TUNNEL_NAME"
+    
+    # Authenticate cloudflared
+    echo "$CLOUDFLARE_TOKEN" | cloudflared tunnel login --token
+    
+    # Create tunnel
+    cloudflared tunnel create "$TUNNEL_NAME"
+    
+    # Get tunnel UUID
+    TUNNEL_UUID=$(cloudflared tunnel list | grep "$TUNNEL_NAME" | awk '{print $1}')
+    
+    if [ -z "$TUNNEL_UUID" ]; then
+        print_error "Failed to create tunnel"
+        exit 1
+    fi
+    
+    print_success "Tunnel created with UUID: $TUNNEL_UUID"
+    
+    # Create tunnel configuration
+    mkdir -p ~/.cloudflared
+    cat > ~/.cloudflared/config.yml << EOF
+tunnel: $TUNNEL_UUID
+credentials-file: ~/.cloudflared/$TUNNEL_UUID.json
+
+ingress:
+  - hostname: ${SUBDOMAIN}.${DOMAIN_NAME}
+    service: http://localhost:8000
+  - service: http_status:404
+EOF
+    
+    # Create DNS record
+    print_status "Creating DNS record..."
+    cloudflared tunnel route dns "$TUNNEL_UUID" "${SUBDOMAIN}.${DOMAIN_NAME}"
+    
+    print_success "Cloudflare Tunnel configured successfully"
+    print_success "API will be accessible at: https://${SUBDOMAIN}.${DOMAIN_NAME}"
+}
+
+create_systemd_service() {
+    print_status "Creating systemd services..."
+    
+    # Main API service
     sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null << EOF
 [Unit]
 Description=Multi-Sensor FastAPI Server
@@ -272,7 +317,7 @@ User=root
 Group=root
 WorkingDirectory=$PROJECT_DIR
 Environment=PATH=$PROJECT_DIR/venv/bin
-ExecStart=$PROJECT_DIR/venv/bin/python $PROJECT_DIR/ultrasonic_server.py
+ExecStart=$PROJECT_DIR/venv/bin/python $PROJECT_DIR/server.py
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -282,10 +327,10 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
     
-    # ngrok service (updated for port 8000)
-    sudo tee /etc/systemd/system/${NGROK_SERVICE_NAME}.service > /dev/null << EOF
+    # Cloudflare Tunnel service
+    sudo tee /etc/systemd/system/${CLOUDFLARED_SERVICE_NAME}.service > /dev/null << EOF
 [Unit]
-Description=ngrok tunnel for Multi-Sensor API
+Description=Cloudflare Tunnel for Multi-Sensor API
 After=network.target ${SERVICE_NAME}.service
 Wants=network.target
 Requires=${SERVICE_NAME}.service
@@ -295,7 +340,7 @@ Type=simple
 User=$USER
 Group=$USER
 WorkingDirectory=$PROJECT_DIR
-ExecStart=/usr/local/bin/ngrok http 8000 --log stdout
+ExecStart=/usr/bin/cloudflared tunnel run
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -308,7 +353,7 @@ EOF
     # Reload systemd
     sudo systemctl daemon-reload
     sudo systemctl enable ${SERVICE_NAME}.service
-    sudo systemctl enable ${NGROK_SERVICE_NAME}.service
+    sudo systemctl enable ${CLOUDFLARED_SERVICE_NAME}.service
     
     print_success "Systemd services created and enabled"
 }
@@ -321,69 +366,51 @@ create_management_scripts() {
 #!/bin/bash
 cd $PROJECT_DIR
 source venv/bin/activate
-python3 ultrasonic_server.py
+python3 server.py
 EOF
     chmod +x "$PROJECT_DIR/start.sh"
     
-    # Create ngrok URL checker script
-    cat > "$PROJECT_DIR/get_ngrok_url.sh" << EOF
+    # Create tunnel status checker script
+    cat > "$PROJECT_DIR/check_tunnel.sh" << EOF
 #!/bin/bash
 
-echo "🌐 Checking ngrok tunnel status..."
+echo "🌐 Checking Cloudflare Tunnel status..."
 echo
 
-# Check if ngrok service is running
-if ! sudo systemctl is-active --quiet $NGROK_SERVICE_NAME; then
-    echo "❌ ngrok service is not running"
-    echo "Start it with: sudo systemctl start $NGROK_SERVICE_NAME"
+# Check if cloudflared service is running
+if ! sudo systemctl is-active --quiet $CLOUDFLARED_SERVICE_NAME; then
+    echo "❌ Cloudflare Tunnel service is not running"
+    echo "Start it with: sudo systemctl start $CLOUDFLARED_SERVICE_NAME"
     exit 1
 fi
 
-# Wait a moment for ngrok to establish tunnel
-sleep 2
+echo "✅ Cloudflare Tunnel service is running!"
+echo "🌐 External URL: https://${SUBDOMAIN}.${DOMAIN_NAME}"
+echo
+echo "📡 Test your Multi-Sensor API:"
+echo "   https://${SUBDOMAIN}.${DOMAIN_NAME}/ (Homepage with documentation)"
+echo "   https://${SUBDOMAIN}.${DOMAIN_NAME}/docs (Swagger UI)"
+echo "   https://${SUBDOMAIN}.${DOMAIN_NAME}/sensors (All sensor readings)"
+echo "   https://${SUBDOMAIN}.${DOMAIN_NAME}/sensors/ultrasonic (Distance sensor)"
+echo "   https://${SUBDOMAIN}.${DOMAIN_NAME}/sensors/mq135 (Air quality sensor)"
+echo "   https://${SUBDOMAIN}.${DOMAIN_NAME}/sensors/dht11 (Temperature/Humidity)"
+echo "   https://${SUBDOMAIN}.${DOMAIN_NAME}/sensors/alerts (Sensor alerts)"
+echo "   https://${SUBDOMAIN}.${DOMAIN_NAME}/health (Health check)"
+echo
+echo "📋 Use this URL to connect from any device on any network!"
+echo "🔒 Secure HTTPS connection provided by Cloudflare"
 
-# Get ngrok URL from API
-NGROK_URL=\$(curl -s http://localhost:4040/api/tunnels | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    tunnels = data.get('tunnels', [])
-    for tunnel in tunnels:
-        if tunnel.get('proto') == 'https':
-            print(tunnel['public_url'])
-            break
-    else:
-        print('No HTTPS tunnel found')
-except:
-    print('Error getting tunnel info')
-" 2>/dev/null)
-
-if [ -n "\$NGROK_URL" ] && [ "\$NGROK_URL" != "No HTTPS tunnel found" ] && [ "\$NGROK_URL" != "Error getting tunnel info" ]; then
-    echo "✅ ngrok tunnel is active!"
-    echo "🌐 External URL: \$NGROK_URL"
-    echo
-    echo "📡 Test your Multi-Sensor API:"
-    echo "   \$NGROK_URL/ (Homepage with documentation)"
-    echo "   \$NGROK_URL/docs (Swagger UI)"
-    echo "   \$NGROK_URL/sensors (All sensor readings)"
-    echo "   \$NGROK_URL/sensors/ultrasonic (Distance sensor)"
-    echo "   \$NGROK_URL/sensors/mq135 (Air quality sensor)"
-    echo "   \$NGROK_URL/sensors/dht11 (Temperature/Humidity)"
-    echo "   \$NGROK_URL/sensors/alerts (Sensor alerts)"
-    echo "   \$NGROK_URL/health (Health check)"
-    echo
-    echo "📋 Use this URL to connect from any device on any network!"
+# Check tunnel connectivity
+echo
+echo "🔍 Testing tunnel connectivity..."
+if curl -s -o /dev/null -w "%{http_code}" "https://${SUBDOMAIN}.${DOMAIN_NAME}/health" | grep -q "200"; then
+    echo "✅ Tunnel is working correctly!"
 else
-    echo "❌ Could not get ngrok URL"
-    echo "Check ngrok logs: sudo journalctl -u $NGROK_SERVICE_NAME -f"
-    echo
-    echo "Possible issues:"
-    echo "- ngrok auth token not configured"
-    echo "- ngrok service not running properly"
-    echo "- Network connectivity issues"
+    echo "⚠️  Tunnel may not be fully ready yet or API is not responding"
+    echo "Check service logs: sudo journalctl -u $SERVICE_NAME -f"
 fi
 EOF
-    chmod +x "$PROJECT_DIR/get_ngrok_url.sh"
+    chmod +x "$PROJECT_DIR/check_tunnel.sh"
     
     # Create service management script
     cat > "$PROJECT_DIR/manage.sh" << EOF
@@ -392,70 +419,78 @@ EOF
 case "\$1" in
     start)
         sudo systemctl start $SERVICE_NAME
-        sudo systemctl start $NGROK_SERVICE_NAME
+        sudo systemctl start $CLOUDFLARED_SERVICE_NAME
         echo "Services started"
-        sleep 3
-        echo "Getting ngrok URL..."
-        $PROJECT_DIR/get_ngrok_url.sh
+        sleep 5
+        echo "Checking tunnel status..."
+        $PROJECT_DIR/check_tunnel.sh
         ;;
     stop)
         sudo systemctl stop $SERVICE_NAME
-        sudo systemctl stop $NGROK_SERVICE_NAME
+        sudo systemctl stop $CLOUDFLARED_SERVICE_NAME
         echo "Services stopped"
         ;;
     restart)
         sudo systemctl restart $SERVICE_NAME
-        sudo systemctl restart $NGROK_SERVICE_NAME
+        sudo systemctl restart $CLOUDFLARED_SERVICE_NAME
         echo "Services restarted"
-        sleep 3
-        echo "Getting ngrok URL..."
-        $PROJECT_DIR/get_ngrok_url.sh
+        sleep 5
+        echo "Checking tunnel status..."
+        $PROJECT_DIR/check_tunnel.sh
         ;;
     status)
         echo "=== Multi-Sensor API Service Status ==="
         sudo systemctl status $SERVICE_NAME --no-pager
         echo
-        echo "=== ngrok Service Status ==="
-        sudo systemctl status $NGROK_SERVICE_NAME --no-pager
+        echo "=== Cloudflare Tunnel Service Status ==="
+        sudo systemctl status $CLOUDFLARED_SERVICE_NAME --no-pager
         ;;
     logs)
         echo "Choose logs to view:"
         echo "1) API logs"
-        echo "2) ngrok logs"
+        echo "2) Cloudflare Tunnel logs"
         echo "3) Both"
         read -p "Enter choice (1-3): " choice
         case \$choice in
             1) sudo journalctl -u $SERVICE_NAME -f ;;
-            2) sudo journalctl -u $NGROK_SERVICE_NAME -f ;;
-            3) sudo journalctl -u $SERVICE_NAME -u $NGROK_SERVICE_NAME -f ;;
+            2) sudo journalctl -u $CLOUDFLARED_SERVICE_NAME -f ;;
+            3) sudo journalctl -u $SERVICE_NAME -u $CLOUDFLARED_SERVICE_NAME -f ;;
             *) echo "Invalid choice" ;;
         esac
         ;;
     url)
-        $PROJECT_DIR/get_ngrok_url.sh
+        $PROJECT_DIR/check_tunnel.sh
         ;;
     enable)
         sudo systemctl enable $SERVICE_NAME
-        sudo systemctl enable $NGROK_SERVICE_NAME
+        sudo systemctl enable $CLOUDFLARED_SERVICE_NAME
         echo "Services enabled for auto-start"
         ;;
     disable)
         sudo systemctl disable $SERVICE_NAME
-        sudo systemctl disable $NGROK_SERVICE_NAME
+        sudo systemctl disable $CLOUDFLARED_SERVICE_NAME
         echo "Services disabled"
         ;;
+    tunnel-info)
+        echo "=== Cloudflare Tunnel Information ==="
+        cloudflared tunnel list
+        echo
+        echo "=== Tunnel Configuration ==="
+        cat ~/.cloudflared/config.yml
+        ;;
     *)
-        echo "Usage: \$0 {start|stop|restart|status|logs|url|enable|disable}"
+        echo "Usage: \$0 {start|stop|restart|status|logs|url|enable|disable|tunnel-info}"
         echo
         echo "Commands:"
-        echo "  start    - Start both API and ngrok services"
-        echo "  stop     - Stop both services"
-        echo "  restart  - Restart both services"
-        echo "  status   - Show status of both services"
-        echo "  logs     - View service logs"
-        echo "  url      - Get current ngrok URL"
-        echo "  enable   - Enable auto-start on boot"
-        echo "  disable  - Disable auto-start on boot"
+        echo "  start       - Start both API and Cloudflare Tunnel services"
+        echo "  stop        - Stop both services"
+        echo "  restart     - Restart both services"
+        echo "  status      - Show status of both services"
+        echo "  logs        - View service logs"
+        echo "  url         - Check tunnel status and show URL"
+        echo "  enable      - Enable auto-start on boot"
+        echo "  disable     - Disable auto-start on boot"
+        echo "  tunnel-info - Show tunnel configuration and details"
         exit 1
         ;;
 esac
@@ -505,11 +540,12 @@ test_installation() {
     # Try to import spidev
     python3 -c "import spidev; print('spidev imported successfully')" 2>/dev/null || print_warning "spidev import failed"
     
-    # Test ngrok
-    if command -v ngrok &> /dev/null; then
-        print_success "ngrok installed successfully"
+    # Test cloudflared
+    if command -v cloudflared &> /dev/null; then
+        print_success "cloudflared installed successfully"
+        cloudflared version
     else
-        print_error "ngrok installation failed"
+        print_error "cloudflared installation failed"
     fi
     
     print_success "Installation test completed"
@@ -524,20 +560,15 @@ display_usage_info() {
     echo "📁 Project directory: $PROJECT_DIR"
     echo "🏠 Local API URL: http://$IP:8000"
     echo "📚 API Documentation: http://$IP:8000/docs (Swagger UI)"
-    echo "🌐 External access: via ngrok (see commands below)"
+    echo "🌐 External URL: https://${SUBDOMAIN}.${DOMAIN_NAME}"
+    echo "🔒 Secure HTTPS connection provided by Cloudflare"
     echo
     echo "📋 Next steps:"
     echo "  1. If you haven't already, upload your files to:"
-    echo "     ultrasonic_server.py → $PROJECT_DIR"
+    echo "     server.py → $PROJECT_DIR"
     echo "     requirements.txt → $PROJECT_DIR"
     echo
-    if [ -z "$NGROK_AUTH_TOKEN" ]; then
-        echo "  2. Configure ngrok auth token:"
-        echo "     ngrok config add-authtoken YOUR_TOKEN"
-        echo "     (Get your token from https://dashboard.ngrok.com/get-started/your-authtoken)"
-        echo
-    fi
-    echo "  3. Wire your sensors:"
+    echo "  2. Wire your sensors:"
     echo
     echo "     🌊 HC-SR04 Ultrasonic Sensor:"
     echo "     VCC  → 5V (Pin 2 or 4)"
@@ -557,22 +588,23 @@ display_usage_info() {
     echo "     + 10kΩ pull-up resistor between VCC and Data"
     echo
     echo "🚀 Management commands:"
-    echo "  Start both services:  $PROJECT_DIR/manage.sh start"
-    echo "  Stop both services:   $PROJECT_DIR/manage.sh stop"
-    echo "  Check status:         $PROJECT_DIR/manage.sh status"
-    echo "  Get ngrok URL:        $PROJECT_DIR/manage.sh url"
-    echo "  View logs:            $PROJECT_DIR/manage.sh logs"
-    echo "  Manual start:         $PROJECT_DIR/start.sh"
+    echo "  Start both services:    $PROJECT_DIR/manage.sh start"
+    echo "  Stop both services:     $PROJECT_DIR/manage.sh stop"
+    echo "  Check status:           $PROJECT_DIR/manage.sh status"
+    echo "  Check tunnel & URL:     $PROJECT_DIR/manage.sh url"
+    echo "  View logs:              $PROJECT_DIR/manage.sh logs"
+    echo "  Tunnel information:     $PROJECT_DIR/manage.sh tunnel-info"
+    echo "  Manual start:           $PROJECT_DIR/start.sh"
     echo
     echo "🔧 Individual service commands:"
     echo "  sudo systemctl start $SERVICE_NAME"
-    echo "  sudo systemctl start $NGROK_SERVICE_NAME"
+    echo "  sudo systemctl start $CLOUDFLARED_SERVICE_NAME"
     echo "  sudo systemctl stop $SERVICE_NAME"
-    echo "  sudo systemctl stop $NGROK_SERVICE_NAME"
+    echo "  sudo systemctl stop $CLOUDFLARED_SERVICE_NAME"
     echo
     echo "📡 Test API endpoints:"
     echo "  Local:  curl http://localhost:8000/sensors"
-    echo "  Remote: Use the ngrok URL from 'manage.sh url'"
+    echo "  Remote: curl https://${SUBDOMAIN}.${DOMAIN_NAME}/sensors"
     echo
     echo "🌐 API Endpoints:"
     echo "  /                    - Homepage with documentation"
@@ -585,23 +617,25 @@ display_usage_info() {
     echo "  /health             - Health check all sensors"
     echo "  /config             - Sensor configurations"
     echo
-    echo "🌐 Getting your external URL:"
-    echo "  After starting services, run: $PROJECT_DIR/manage.sh url"
-    echo "  This URL will work from anywhere in the world!"
+    echo "🌐 Your permanent external URL:"
+    echo "  https://${SUBDOMAIN}.${DOMAIN_NAME}"
+    echo "  This URL will work from anywhere in the world with HTTPS!"
     echo
     if [ -z "$REPO_URL" ]; then
-        print_warning "Remember to upload your ultrasonic_server.py and requirements.txt files before starting the service!"
+        print_warning "Remember to upload your server.py and requirements.txt files before starting the service!"
     fi
     
-    if [ -z "$NGROK_AUTH_TOKEN" ]; then
-        print_warning "Remember to configure your ngrok auth token for external access!"
-    fi
+    echo "🔍 Troubleshooting:"
+    echo "  Check tunnel status: $PROJECT_DIR/check_tunnel.sh"
+    echo "  View API logs:       sudo journalctl -u $SERVICE_NAME -f"
+    echo "  View tunnel logs:    sudo journalctl -u $CLOUDFLARED_SERVICE_NAME -f"
+    echo "  List tunnels:        cloudflared tunnel list"
 }
 
 # Main execution
 main() {
-    echo "🚀 Multi-Sensor FastAPI Server Setup with ngrok"
-    echo "==============================================="
+    echo "🚀 Multi-Sensor FastAPI Server Setup with Cloudflare Tunnel"
+    echo "==========================================================="
     
     # Parse arguments
     if [ $# -gt 0 ]; then
@@ -612,15 +646,16 @@ main() {
     # Pre-flight checks
     check_root
     check_raspberry_pi
-    get_ngrok_auth_token
+    get_cloudflare_config
     
     # Setup steps
     update_system
     install_dependencies
-    install_ngrok
+    install_cloudflared
     setup_project_directory
     clone_or_download_code
     setup_virtual_environment
+    setup_cloudflare_tunnel
     create_systemd_service
     create_management_scripts
     setup_gpio_permissions
@@ -632,18 +667,18 @@ main() {
     echo
     print_success "Setup script completed! 🎉"
     
-    if [ -n "$REPO_URL" ] && [ -f "$PROJECT_DIR/ultrasonic_server.py" ]; then
+    if [ -n "$REPO_URL" ] && [ -f "$PROJECT_DIR/server.py" ]; then
         echo
         read -p "Would you like to start both services now? (y/N): " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             sudo systemctl start $SERVICE_NAME
-            sleep 2
-            sudo systemctl start $NGROK_SERVICE_NAME
             sleep 3
+            sudo systemctl start $CLOUDFLARED_SERVICE_NAME
+            sleep 5
             echo
-            print_status "Services started! Getting your external URL..."
-            "$PROJECT_DIR/get_ngrok_url.sh"
+            print_status "Services started! Checking your tunnel status..."
+            "$PROJECT_DIR/check_tunnel.sh"
         fi
     fi
 }
