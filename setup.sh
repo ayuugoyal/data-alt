@@ -244,19 +244,51 @@ if ! sudo systemctl is-active --quiet cloudflared-tunnel; then
     exit 1
 fi
 
-# Method 1: Try to get from cloudflared directly
-TUNNEL_URL=$(timeout 10 cloudflared tunnel --url http://localhost:8000 2>/dev/null | grep -o 'https://.*\.trycloudflare\.com' | head -1 2>/dev/null || echo "")
+echo "✅ Tunnel service is running"
 
-# Method 2: Get from logs if method 1 fails
+# Method 1: Check recent logs for URL
+echo "📋 Checking service logs..."
+TUNNEL_URL=$(sudo journalctl -u cloudflared-tunnel --since "10 minutes ago" --no-pager -q | grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' | tail -1)
+
+# Method 2: Get from all available logs
 if [ -z "$TUNNEL_URL" ]; then
-    echo "Checking service logs..."
-    TUNNEL_URL=$(sudo journalctl -u cloudflared-tunnel --since "5 minutes ago" -q | grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' | tail -1)
+    echo "📋 Checking all tunnel logs..."
+    TUNNEL_URL=$(sudo journalctl -u cloudflared-tunnel --no-pager -q | grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' | tail -1)
 fi
 
-# Method 3: Start a temporary tunnel to get URL
+# Method 3: Use the tunnel name to construct URL or get from API
 if [ -z "$TUNNEL_URL" ]; then
-    echo "Getting fresh tunnel URL..."
-    TUNNEL_URL=$(timeout 15 cloudflared tunnel --url http://localhost:8000 2>/dev/null | grep -o 'https://.*\.trycloudflare\.com' | head -1)
+    echo "🔄 Starting temporary quick tunnel to get URL..."
+    # Kill any existing temporary tunnels
+    pkill -f "cloudflared.*--url" 2>/dev/null || true
+    sleep 2
+    
+    # Start temporary tunnel in background and capture output
+    TEMP_OUTPUT=$(mktemp)
+    timeout 20 cloudflared tunnel --url http://localhost:8000 > "$TEMP_OUTPUT" 2>&1 &
+    TEMP_PID=$!
+    
+    # Wait for URL to appear
+    for i in {1..15}; do
+        if grep -q "trycloudflare.com" "$TEMP_OUTPUT" 2>/dev/null; then
+            TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' "$TEMP_OUTPUT" | head -1)
+            break
+        fi
+        sleep 1
+    done
+    
+    # Clean up
+    kill $TEMP_PID 2>/dev/null || true
+    rm -f "$TEMP_OUTPUT"
+fi
+
+# Method 4: Show what we can find in logs for debugging
+if [ -z "$TUNNEL_URL" ]; then
+    echo "🔍 Debug - Recent tunnel log entries:"
+    sudo journalctl -u cloudflared-tunnel --since "5 minutes ago" --no-pager | tail -10
+    echo
+    echo "🔍 Looking for any cloudflare URLs in logs:"
+    sudo journalctl -u cloudflared-tunnel --no-pager | grep -i "cloudflare\|tunnel\|https" | tail -5
 fi
 
 if [ -n "$TUNNEL_URL" ]; then
@@ -265,16 +297,35 @@ if [ -n "$TUNNEL_URL" ]; then
     echo
     echo "📡 API Endpoints:"
     echo "   $TUNNEL_URL/ (Homepage)"
-    echo "   $TUNNEL_URL/docs (Swagger UI)"
+    echo "   $TUNNEL_URL/docs (Swagger UI)"  
     echo "   $TUNNEL_URL/sensors (All sensors)"
     echo "   $TUNNEL_URL/health (Health check)"
     echo
     echo "$TUNNEL_URL" > /tmp/current_tunnel_url
+    
+    # Test the URL
+    echo "🧪 Testing tunnel connection..."
+    if curl -s --connect-timeout 10 "$TUNNEL_URL/health" >/dev/null 2>&1; then
+        echo "✅ Tunnel is working correctly!"
+    else
+        echo "⚠️  Tunnel URL found but API might not be responding"
+        echo "   Check if local API is running: curl http://localhost:8000/health"
+    fi
 else
     echo "❌ Could not get tunnel URL"
-    echo "Try restarting the tunnel service:"
-    echo "sudo systemctl restart cloudflared-tunnel"
-    echo "Then wait 30 seconds and try again"
+    echo
+    echo "🔧 Troubleshooting steps:"
+    echo "1. Check if API is running locally:"
+    echo "   curl http://localhost:8000/health"
+    echo
+    echo "2. Check tunnel service status:"
+    echo "   sudo systemctl status cloudflared-tunnel"
+    echo
+    echo "3. Try restarting services:"
+    echo "   ./manage.sh restart"
+    echo
+    echo "4. Check logs for errors:"
+    echo "   sudo journalctl -u cloudflared-tunnel -f"
 fi
 EOF
     chmod +x "$PROJECT_DIR/get_url.sh"
@@ -332,8 +383,28 @@ case "\$1" in
         echo "Testing local API..."
         curl -s http://localhost:8000/health || echo "API not responding locally"
         ;;
+    debug)
+        echo "=== Debug Information ==="
+        echo "API Service Status:"
+        sudo systemctl is-active $SERVICE_NAME
+        echo
+        echo "Tunnel Service Status:"
+        sudo systemctl is-active $TUNNEL_SERVICE_NAME
+        echo
+        echo "Local API Test:"
+        curl -s http://localhost:8000/health 2>/dev/null && echo "✅ API responding" || echo "❌ API not responding"
+        echo
+        echo "Tunnel Configuration:"
+        cat $HOME/.cloudflared/config.yml 2>/dev/null || echo "Config not found"
+        echo
+        echo "Recent Tunnel Logs:"
+        sudo journalctl -u $TUNNEL_SERVICE_NAME -n 10 --no-pager
+        echo
+        echo "Looking for trycloudflare URLs in logs:"
+        sudo journalctl -u $TUNNEL_SERVICE_NAME --no-pager | grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' | tail -3
+        ;;
     *)
-        echo "Usage: \$0 {start|stop|restart|status|logs|url|quick-url|test}"
+        echo "Usage: \$0 {start|stop|restart|status|logs|url|quick-url|test|debug}"
         echo
         echo "Commands:"
         echo "  start      - Start both services"
@@ -344,6 +415,7 @@ case "\$1" in
         echo "  url        - Get tunnel URL"
         echo "  quick-url  - Get URL with temporary tunnel"
         echo "  test       - Test local API"
+        echo "  debug      - Show debug information"
         ;;
 esac
 EOF
